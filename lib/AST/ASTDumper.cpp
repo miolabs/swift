@@ -779,10 +779,10 @@ namespace {
     }
 
     void visitSourceFile(const SourceFile &SF) {
-      OS.indent(Indent);
+      /*OS.indent(Indent);
       PrintWithColorRAII(OS, ParenthesisColor) << '(';
       PrintWithColorRAII(OS, ASTNodeColor) << "source_file ";
-      PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';
+      PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';*/
       
       for (Decl *D : SF.Decls) {
         if (D->isImplicit())
@@ -791,11 +791,11 @@ namespace {
         OS << '\n';
         printRec(D);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitVarDecl(VarDecl *VD) {
-      printCommon(VD, "var_decl");
+      /*printCommon(VD, "var_decl");
       if (VD->isStatic())
         PrintWithColorRAII(OS, DeclModifierColor) << " type";
       if (VD->isLet())
@@ -806,7 +806,14 @@ namespace {
         PrintWithColorRAII(OS, DeclModifierColor) << " lazy";
       printStorageImpl(VD);
       printAccessors(VD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      
+      //in order to know if var/let, we're invoking visitPatternBindingDecl from here
+      //and ignoring the 'native' invokation
+      OS << (VD->isLet() ? "const" : "let") << " ";
+      OS << VD->getFullName() << " = ";
+      visitPatternBindingDecl2(VD->getParentPatternBinding());
     }
 
     void printStorageImpl(AbstractStorageDecl *D) {
@@ -885,7 +892,7 @@ namespace {
     }
 
     void visitPatternBindingDecl(PatternBindingDecl *PBD) {
-      printCommon(PBD, "pattern_binding_decl");
+      /*printCommon(PBD, "pattern_binding_decl");
 
       for (auto entry : PBD->getPatternList()) {
         OS << '\n';
@@ -895,9 +902,18 @@ namespace {
           printRec(entry.getInit());
         }
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
+    void visitPatternBindingDecl2(PatternBindingDecl *PBD) {
+      
+      for (auto entry : PBD->getPatternList()) {
+        if (entry.getInit()) {
+          printRec(entry.getInit());
+        }
+      }
+    }
+    
     void visitSubscriptDecl(SubscriptDecl *SD) {
       printCommon(SD, "subscript_decl");
       printStorageImpl(SD);
@@ -1082,12 +1098,12 @@ namespace {
     }
 
     void visitTopLevelCodeDecl(TopLevelCodeDecl *TLCD) {
-      printCommon(TLCD, "top_level_code_decl");
+      /*printCommon(TLCD, "top_level_code_decl");*/
       if (TLCD->getBody()) {
         OS << "\n";
         printRec(TLCD->getBody(), static_cast<Decl *>(TLCD)->getASTContext());
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
     
     void printASTNodes(const ArrayRef<ASTNode> &Elements, const ASTContext &Ctx, StringRef Name) {
@@ -1473,9 +1489,9 @@ public:
   }
 
   void visitBraceStmt(BraceStmt *S) {
-    printCommon(S, "brace_stmt");
+    /*printCommon(S, "brace_stmt");*/
     printASTNodes(S->getElements());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void printASTNodes(const ArrayRef<ASTNode> &Elements) {
@@ -1830,7 +1846,7 @@ public:
   }
 
   void visitStringLiteralExpr(StringLiteralExpr *E) {
-    printCommon(E, "string_literal_expr");
+    /*printCommon(E, "string_literal_expr");
     PrintWithColorRAII(OS, LiteralValueColor) << " encoding="
       << getStringLiteralExprEncodingString(E->getEncoding())
       << " value=" << QuotedString(E->getValue())
@@ -1839,7 +1855,9 @@ public:
       PrintWithColorRAII(OS, LiteralValueColor).getOS());
     PrintWithColorRAII(OS, LiteralValueColor) << " initializer=";
     E->getInitializer().dump(PrintWithColorRAII(OS, LiteralValueColor).getOS());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << QuotedString(E->getValue());
   }
   void visitInterpolatedStringLiteralExpr(InterpolatedStringLiteralExpr *E) {
     printCommon(E, "interpolated_string_literal_expr");
@@ -1881,7 +1899,7 @@ public:
   }
 
   void visitDeclRefExpr(DeclRefExpr *E) {
-    printCommon(E, "declref_expr");
+    /*printCommon(E, "declref_expr");
     PrintWithColorRAII(OS, DeclColor) << " decl=";
     printDeclRef(E->getDeclRef());
     if (E->getAccessSemantics() != AccessSemantics::Ordinary)
@@ -1889,7 +1907,9 @@ public:
         << " " << getAccessSemanticsString(E->getAccessSemantics());
     PrintWithColorRAII(OS, ExprModifierColor)
       << " function_ref=" << getFunctionRefKindStr(E->getFunctionRefKind());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    //for now, we're just displaying the full name; not sure if that exhausts all scenarios
+    OS << E->getDeclRef().getDecl()->getFullName();
   }
   void visitSuperRefExpr(SuperRefExpr *E) {
     printCommon(E, "super_ref_expr");
@@ -1948,7 +1968,7 @@ public:
   }
 
   void visitMemberRefExpr(MemberRefExpr *E) {
-    printCommon(E, "member_ref_expr");
+    /*printCommon(E, "member_ref_expr");
     PrintWithColorRAII(OS, DeclColor) << " decl=";
     printDeclRef(E->getMember());
     if (E->getAccessSemantics() != AccessSemantics::Ordinary)
@@ -1959,7 +1979,15 @@ public:
 
     OS << '\n';
     printRec(E->getBase());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    //TODO@adn printDeclRef(E->getMember())
+    printRec(E->getBase());
+    //TODO handle code replacements like a.b => _.b(a) etc; also assignments etc
+    OS << ".";
+    //E->getMember().getDecl() might be actually the member definition we're after
+    //TODO we'll need to access that to get tsName; displaying `full name` for now
+    OS << E->getMember().getDecl()->getFullName();
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -2154,13 +2182,13 @@ public:
   }
 
   void visitErasureExpr(ErasureExpr *E) {
-    printCommon(E, "erasure_expr") << '\n';
+    /*printCommon(E, "erasure_expr") << '\n';
     for (auto conf : E->getConformances()) {
       printRec(conf);
       OS << '\n';
-    }
+    }*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitAnyHashableErasureExpr(AnyHashableErasureExpr *E) {
     printCommon(E, "any_hashable_erasure_expr") << '\n';
@@ -2187,9 +2215,10 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitLoadExpr(LoadExpr *E) {
-    printCommon(E, "load_expr") << '\n';
+    //I think we can just ignore this, as it's just a wrapper
+    /*printCommon(E, "load_expr") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitMetatypeConversionExpr(MetatypeConversionExpr *E) {
     printCommon(E, "metatype_conversion_expr") << '\n';
