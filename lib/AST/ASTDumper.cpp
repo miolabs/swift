@@ -14,6 +14,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <string>
+#include <regex>
+#include <unordered_map>
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
@@ -37,6 +40,11 @@
 #include "llvm/Support/raw_ostream.h"
 
 using namespace swift;
+
+const std::unordered_map<std::string, std::string> REPLACEMENTS = {
+  {"Swift.(file).String extension.count", "#L.length"},
+  {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"}
+};
 
 struct TerminalColor {
   llvm::raw_ostream::Colors Color;
@@ -1908,8 +1916,18 @@ public:
     PrintWithColorRAII(OS, ExprModifierColor)
       << " function_ref=" << getFunctionRefKindStr(E->getFunctionRefKind());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    //for now, we're just displaying the full name; not sure if that exhausts all scenarios
-    OS << E->getDeclRef().getDecl()->getFullName();
+    
+    std::string memberIdentifier;
+    llvm::raw_string_ostream memberIdentifierStream(memberIdentifier);
+    E->getDeclRef().dump(memberIdentifierStream);
+    memberIdentifierStream.flush();
+    
+    std::string string = E->getDeclRef().getDecl()->getFullName().getBaseIdentifier().get();
+    if(REPLACEMENTS.count(memberIdentifier)) {
+      string = REPLACEMENTS.at(memberIdentifier);
+    }
+    
+    OS << string;
   }
   void visitSuperRefExpr(SuperRefExpr *E) {
     printCommon(E, "super_ref_expr");
@@ -1981,13 +1999,27 @@ public:
     printRec(E->getBase());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    //TODO@adn printDeclRef(E->getMember())
-    printRec(E->getBase());
-    //TODO handle code replacements like a.b => _.b(a) etc; also assignments etc
-    OS << ".";
-    //E->getMember().getDecl() might be actually the member definition we're after
-    //TODO we'll need to access that to get tsName; displaying `full name` for now
-    OS << E->getMember().getDecl()->getFullName();
+    std::string memberIdentifier;
+    llvm::raw_string_ostream memberIdentifierStream(memberIdentifier);
+    E->getMember().dump(memberIdentifierStream);
+    memberIdentifierStream.flush();
+    
+    std::string rString = E->getMember().getDecl()->getFullName().getBaseIdentifier().get();
+    if(REPLACEMENTS.count(memberIdentifier)) {
+      rString = REPLACEMENTS.at(memberIdentifier);
+    }
+    
+    std::string lName = "#L";
+    std::string defaultPrefix = "#L.";
+    
+    std::string lString;
+    llvm::raw_string_ostream lStream(lString);
+    E->getBase()->dump(lStream);
+    lStream.flush();
+    
+    if(rString.find(lName) == std::string::npos) rString = defaultPrefix + rString;
+    
+    OS << std::regex_replace(rString, std::regex(lName), lString);
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -2014,12 +2046,12 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitParenExpr(ParenExpr *E) {
-    printCommon(E, "paren_expr");
+    /*printCommon(E, "paren_expr");
     if (E->hasTrailingClosure())
       OS << " trailing-closure";
-    OS << '\n';
+    OS << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitTupleExpr(TupleExpr *E) {
     printCommon(E, "tuple_expr");
@@ -2119,7 +2151,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitTupleShuffleExpr(TupleShuffleExpr *E) {
-    printCommon(E, "tuple_shuffle_expr");
+    /*printCommon(E, "tuple_shuffle_expr");
     switch (E->getTypeImpact()) {
     case TupleShuffleExpr::ScalarToTuple:
       OS << " scalar_to_tuple";
@@ -2150,9 +2182,9 @@ public:
       defaultArgsOwner.dump(OS);
     }
 
-    OS << "\n";
+    OS << "\n";*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitUnresolvedTypeConversionExpr(UnresolvedTypeConversionExpr *E) {
     printCommon(E, "unresolvedtype_conversion_expr") << '\n';
@@ -2425,8 +2457,8 @@ public:
     }
   }
 
-  void printApplyExpr(ApplyExpr *E, const char *NodeName) {
-    printCommon(E, NodeName);
+  void printApplyExpr(ApplyExpr *E, std::string NodeName) {
+    /*printCommon(E, NodeName);
     if (E->isSuper())
       PrintWithColorRAII(OS, ExprModifierColor) << " super";
     if (E->isThrowsSet()) {
@@ -2440,7 +2472,24 @@ public:
     printRec(E->getFn());
     OS << '\n';
     printRec(E->getArg());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string rName = NodeName == "call_expr" ? "#AA" : "R";
+    std::string defaultSuffix = NodeName == "call_expr" ? "(#AA)" : ".#R";
+    
+    std::string lString;
+    llvm::raw_string_ostream lStream(lString);
+    E->getFn()->dump(lStream);
+    lStream.flush();
+    
+    if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
+    
+    std::string rString;
+    llvm::raw_string_ostream rStream(rString);
+    E->getArg()->dump(rStream);
+    rStream.flush();
+    
+    OS << std::regex_replace(lString, std::regex(rName), rString);
   }
 
   void visitCallExpr(CallExpr *E) {
