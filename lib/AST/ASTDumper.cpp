@@ -43,7 +43,8 @@ using namespace swift;
 
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.count", "#L.length"},
-  {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"}
+  {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
+  {"Swift.(file).String extension.+=", "#A0 += #A1"}
 };
 
 struct TerminalColor {
@@ -1935,14 +1936,18 @@ public:
   }
 
   void visitTypeExpr(TypeExpr *E) {
-    printCommon(E, "type_expr");
+    /*printCommon(E, "type_expr");
     PrintWithColorRAII(OS, TypeReprColor) << " typerepr='";
     if (E->getTypeRepr())
       E->getTypeRepr()->print(PrintWithColorRAII(OS, TypeReprColor).getOS());
     else
       PrintWithColorRAII(OS, TypeReprColor) << "<<NULL>>";
     PrintWithColorRAII(OS, TypeReprColor) << "'";
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    if (E->getTypeRepr()) {
+      E->getTypeRepr()->print(OS);
+    }
   }
 
   void visitOtherConstructorDeclRefExpr(OtherConstructorDeclRefExpr *E) {
@@ -2054,7 +2059,7 @@ public:
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitTupleExpr(TupleExpr *E) {
-    printCommon(E, "tuple_expr");
+    /*printCommon(E, "tuple_expr");
     if (E->hasTrailingClosure())
       OS << " trailing-closure";
 
@@ -2076,7 +2081,25 @@ public:
       else
         OS.indent(Indent+2) << "<<tuple element default value>>";
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string arr[E->getNumElements()];
+    visitTupleExpr(E, arr);
+    for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
+      if (i) OS << ", ";
+      OS << arr[i];
+    }
+  }
+  void visitTupleExpr(TupleExpr *E, std::string* arr) {
+    
+    for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
+      if (E->getElement(i)) {
+        std::string string;
+        llvm::raw_string_ostream stream(string);
+        E->getElement(i)->dump(stream);
+        arr[i] = stream.str();
+      }
+    }
   }
   void visitArrayExpr(ArrayExpr *E) {
     printCommon(E, "array_expr");
@@ -2335,9 +2358,9 @@ public:
   }
 
   void visitInOutExpr(InOutExpr *E) {
-    printCommon(E, "inout_expr") << '\n';
+    /*printCommon(E, "inout_expr") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void visitVarargExpansionExpr(VarargExpansionExpr *E) {
@@ -2474,22 +2497,57 @@ public:
     printRec(E->getArg());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string rName = NodeName == "call_expr" ? "#AA" : "R";
-    std::string defaultSuffix = NodeName == "call_expr" ? "(#AA)" : ".#R";
+    bool isDotMember = NodeName == "dot_syntax_call_expr";
+    
+    std::string rName = isDotMember ? "#R" : "#AA";
+    std::string defaultSuffix = isDotMember ? ".#R" : "(#AA)";
+    bool reversed = isDotMember;
     
     std::string lString;
     llvm::raw_string_ostream lStream(lString);
-    E->getFn()->dump(lStream);
+    if(reversed) E->getArg()->dump(lStream);
+    else E->getFn()->dump(lStream);
     lStream.flush();
     
-    if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
+    std::string lrString;
     
-    std::string rString;
-    llvm::raw_string_ostream rStream(rString);
-    E->getArg()->dump(rStream);
-    rStream.flush();
+    if(std::regex_search(lString, std::regex("#A[0-9]"))) {
+      //if the replacement references specific arguments e.g. #A0 #A1
+      //we can't accept the right-hand side as a single string; we need an array of arguments
+      TupleExpr *tuple = (TupleExpr*)E->getArg();
+      std::string arr[tuple->getNumElements()];
+      visitTupleExpr(tuple, arr);
+      lrString = lString;
+      for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
+        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), arr[i]);
+      }
+    }
+    else {
+      std::string rString;
+      llvm::raw_string_ostream rStream(rString);
+      if(reversed) E->getFn()->dump(rStream);
+      else E->getArg()->dump(rStream);
+      rStream.flush();
+      //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
+      //we replace the #L with left-hand side there (or leave left-hand side altogether if no #L)
+      //that's needed e.g. for String.+= to get rid of the `String`
+      if(rString.find("#") != std::string::npos) {
+        if(rString.find("#L") != std::string::npos) {
+          lrString = std::regex_replace(rString, std::regex("#L"), lString);
+        }
+        else {
+          lrString = rString;
+        }
+      }
+      //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
+      //possibly change both to #NOR and #NOL if they should be omitted
+      else {
+        if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
+        lrString = std::regex_replace(lString, std::regex(rName), rString);
+      }
+    }
     
-    OS << std::regex_replace(lString, std::regex(rName), rString);
+    OS << lrString;
   }
 
   void visitCallExpr(CallExpr *E) {
