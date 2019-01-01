@@ -47,6 +47,30 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.+=", "#A0 += #A1"}
 };
 
+const Expr *isAssignmentExpr = NULL;
+
+std::string dumpToStr(Expr *E) {
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  E->dump(stream);
+  return stream.str();
+}
+std::string dumpToStr(ConcreteDeclRef E) {
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  E.dump(stream);
+  return stream.str();
+}
+
+std::string handleAssignment(Expr *lExpr, std::string rExpr) {
+  isAssignmentExpr = lExpr;//TODO handle T/N/TN
+  std::string setStr = dumpToStr(lExpr);
+  if(setStr.find("#ASS") == std::string::npos && setStr.find("#NOASS") == std::string::npos) {
+    setStr += " = #ASS";
+  }
+  return std::regex_replace(setStr, std::regex("#ASS"), rExpr);
+}
+
 struct TerminalColor {
   llvm::raw_ostream::Colors Color;
   bool Bold;
@@ -955,7 +979,7 @@ namespace {
     }
 
     void printParameter(const ParamDecl *P) {
-      OS.indent(Indent);
+      /*OS.indent(Indent);
       PrintWithColorRAII(OS, ParenthesisColor) << '(';
       PrintWithColorRAII(OS, ParameterColor) << "parameter ";
       printDeclName(P);
@@ -978,7 +1002,6 @@ namespace {
 
       switch (P->getSpecifier()) {
       case VarDecl::Specifier::Let:
-        /* nothing */
         break;
       case VarDecl::Specifier::Var:
         OS << " mutable";
@@ -1009,7 +1032,9 @@ namespace {
         printRec(init);
       }
 
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      OS << P->getFullName() << ": " << P->getType();
     }
 
     void printParameterList(const ParameterList *params, const ASTContext *ctx = nullptr) {
@@ -1074,9 +1099,24 @@ namespace {
     }
 
     void visitFuncDecl(FuncDecl *FD) {
-      printCommonFD(FD, "func_decl");
+      /*printCommonFD(FD, "func_decl");
       printAbstractFunctionDecl(FD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      OS << "function " << FD->getFullName().getBaseIdentifier().get() << " (";
+      auto params = FD->getParameters();
+      bool first = true;
+      for (auto P : *params) {
+        if(first) first = false;
+        else OS << ", ";
+        printParameter(P);
+      }
+      OS << ") {";
+      if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
+        OS << '\n';
+        printRec(Body, FD->getASTContext());
+      }
+      OS << '\n' << "}";
     }
 
     void visitAccessorDecl(AccessorDecl *AD) {
@@ -1918,14 +1958,25 @@ public:
       << " function_ref=" << getFunctionRefKindStr(E->getFunctionRefKind());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string memberIdentifier;
-    llvm::raw_string_ostream memberIdentifierStream(memberIdentifier);
-    E->getDeclRef().dump(memberIdentifierStream);
-    memberIdentifierStream.flush();
-    
     std::string string = E->getDeclRef().getDecl()->getFullName().getBaseIdentifier().get();
+
+    std::string memberIdentifier = dumpToStr(E->getDeclRef());
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
+    }
+    
+    bool isInOut = false;
+    auto decl = E->getDecl();
+    if (auto *var = dyn_cast<VarDecl>(decl)) {
+      isInOut = var->isInOut();
+    }
+    if(isInOut) {
+      if(isAssignmentExpr == E) {
+        string += ".set(#ASS)";
+      }
+      else {
+        string += ".get()";
+      }
     }
     
     OS << string;
@@ -2004,12 +2055,9 @@ public:
     printRec(E->getBase());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string memberIdentifier;
-    llvm::raw_string_ostream memberIdentifierStream(memberIdentifier);
-    E->getMember().dump(memberIdentifierStream);
-    memberIdentifierStream.flush();
-    
     std::string rString = E->getMember().getDecl()->getFullName().getBaseIdentifier().get();
+    
+    std::string memberIdentifier = dumpToStr(E->getMember());
     if(REPLACEMENTS.count(memberIdentifier)) {
       rString = REPLACEMENTS.at(memberIdentifier);
     }
@@ -2017,10 +2065,7 @@ public:
     std::string lName = "#L";
     std::string defaultPrefix = "#L.";
     
-    std::string lString;
-    llvm::raw_string_ostream lStream(lString);
-    E->getBase()->dump(lStream);
-    lStream.flush();
+    std::string lString = dumpToStr(E->getBase());
     
     if(rString.find(lName) == std::string::npos) rString = defaultPrefix + rString;
     
@@ -2094,10 +2139,7 @@ public:
     
     for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
       if (E->getElement(i)) {
-        std::string string;
-        llvm::raw_string_ostream stream(string);
-        E->getElement(i)->dump(stream);
-        arr[i] = stream.str();
+        arr[i] = dumpToStr(E->getElement(i));
       }
     }
   }
@@ -2358,9 +2400,15 @@ public:
   }
 
   void visitInOutExpr(InOutExpr *E) {
-    /*printCommon(E, "inout_expr") << '\n';*/
+    /*printCommon(E, "inout_expr") << '\n';
     printRec(E->getSubExpr());
-    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string getStr = dumpToStr(E->getSubExpr());
+    
+    std::string setStr = handleAssignment(E->getSubExpr(), "$val");
+    
+    OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
   }
 
   void visitVarargExpansionExpr(VarargExpansionExpr *E) {
@@ -2503,11 +2551,7 @@ public:
     std::string defaultSuffix = isDotMember ? ".#R" : "(#AA)";
     bool reversed = isDotMember;
     
-    std::string lString;
-    llvm::raw_string_ostream lStream(lString);
-    if(reversed) E->getArg()->dump(lStream);
-    else E->getFn()->dump(lStream);
-    lStream.flush();
+    std::string lString = dumpToStr(reversed ? E->getArg() : E->getFn());
     
     std::string lrString;
     
@@ -2523,11 +2567,7 @@ public:
       }
     }
     else {
-      std::string rString;
-      llvm::raw_string_ostream rStream(rString);
-      if(reversed) E->getFn()->dump(rStream);
-      else E->getArg()->dump(rStream);
-      rStream.flush();
+      std::string rString = dumpToStr(reversed ? E->getFn() : E->getArg());
       //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
       //we replace the #L with left-hand side there (or leave left-hand side altogether if no #L)
       //that's needed e.g. for String.+= to get rid of the `String`
@@ -2620,11 +2660,15 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitAssignExpr(AssignExpr *E) {
-    printCommon(E, "assign_expr") << '\n';
+    /*printCommon(E, "assign_expr") << '\n';
     printRec(E->getDest());
     OS << '\n';
     printRec(E->getSrc());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string rStr = dumpToStr(E->getSrc());
+    
+    OS << handleAssignment(E->getDest(), rStr);
   }
   void visitEnumIsCaseExpr(EnumIsCaseExpr *E) {
     printCommon(E, "enum_is_case_expr") << ' ' <<
