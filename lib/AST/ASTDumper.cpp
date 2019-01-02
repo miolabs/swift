@@ -44,7 +44,10 @@ using namespace swift;
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String extension.+=", "+#specialass"}
+  {"Swift.(file).String extension.+=", "+#specialass"},
+  {"Swift.(file).Dictionary extension.subscript(_:)", "#L.get(#AA)"},
+  {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }"},
+  {"Swift.(file).Optional.none", "null#NOL"}
 };
 
 Expr *isAssignmentExpr = NULL;
@@ -55,17 +58,17 @@ std::string dumpToStr(Expr *E) {
   E->dump(stream);
   return stream.str();
 }
-std::string dumpToStr(ConcreteDeclRef E) {
+std::string getMemberIdentifier(ConcreteDeclRef E) {
   std::string str;
   llvm::raw_string_ostream stream(str);
-  E.dump(stream);
+  E.getDecl()->dumpRef(stream);
   return stream.str();
 }
 
 std::string handleAssignment(Expr *lExpr, std::string rExpr) {
-  isAssignmentExpr = lExpr;//TODO handle T/N/TN
+  isAssignmentExpr = lExpr;
   std::string setStr = dumpToStr(lExpr);
-  if(setStr.find("#ASS") == std::string::npos && setStr.find("#NOASS") == std::string::npos) {
+  if(setStr.find("#ASS") == std::string::npos) {
     setStr += " = #ASS";
   }
   return std::regex_replace(setStr, std::regex("#ASS"), rExpr);
@@ -1103,7 +1106,7 @@ namespace {
       printAbstractFunctionDecl(FD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      OS << "function " << FD->getFullName().getBaseIdentifier().get() << " (";
+      OS << "function " << FD->getBaseName().userFacingName() << " (";
       auto params = FD->getParameters();
       bool first = true;
       for (auto P : *params) {
@@ -1959,12 +1962,12 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = dumpToStr(E->getDeclRef());
+    std::string memberIdentifier = getMemberIdentifier(E->getDeclRef());
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      string = E->getDeclRef().getDecl()->getFullName().getBaseIdentifier().get();
+      string = E->getDeclRef().getDecl()->getBaseName().userFacingName();
     }
     
     bool isInOut = false;
@@ -2058,12 +2061,12 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string rString;
-    std::string memberIdentifier = dumpToStr(E->getMember());
+    std::string memberIdentifier = getMemberIdentifier(E->getMember());
     if(REPLACEMENTS.count(memberIdentifier)) {
       rString = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      rString = E->getMember().getDecl()->getFullName().getBaseIdentifier().get();
+      rString = E->getMember().getDecl()->getBaseName().userFacingName();
     }
     
     std::string lName = "#L";
@@ -2147,16 +2150,27 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitDictionaryExpr(DictionaryExpr *E) {
-    printCommon(E, "dictionary_expr");
+    /*printCommon(E, "dictionary_expr");
     for (auto elt : E->getElements()) {
       OS << '\n';
       printRec(elt);
     }
     printSemanticExpr(E->getSemanticExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "new Map([";
+    bool first = true;
+    for (auto elt : E->getElements()) {
+      if(first) first = false;
+      else OS << ", ";
+      OS << "[";
+      printRec(elt);
+      OS << "]";
+    }
+    OS << "])";
   }
   void visitSubscriptExpr(SubscriptExpr *E) {
-    printCommon(E, "subscript_expr");
+    /*printCommon(E, "subscript_expr");
     if (E->getAccessSemantics() != AccessSemantics::Ordinary)
       PrintWithColorRAII(OS, AccessLevelColor)
         << " " << getAccessSemanticsString(E->getAccessSemantics());
@@ -2171,7 +2185,33 @@ public:
     printRec(E->getBase());
     OS << '\n';
     printRec(E->getIndex());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    //printApplyExpr(E->getBase(), E->getIndex(), "#AA", ".subcript");
+    
+    std::string string;
+    std::string memberIdentifier = getMemberIdentifier(E->getDecl());
+    if(isAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
+      string = REPLACEMENTS.at(memberIdentifier + "#ASS");
+    }
+    else if(REPLACEMENTS.count(memberIdentifier)) {
+      string = REPLACEMENTS.at(memberIdentifier);
+    }
+    else {
+      string = "#L.subscript$";
+      if(isAssignmentExpr == E) {
+        string += "set(#AA, #ASS)";
+      }
+      else {
+        string += "get(#AA)";
+      }
+    }
+    
+    string = std::regex_replace(string, std::regex("#L"), dumpToStr(((InOutExpr*)E->getBase())->getSubExpr()));
+    
+    string = std::regex_replace(string, std::regex("#AA"), dumpToStr(E->getIndex()));
+    
+    OS << string;
   }
   void visitKeyPathApplicationExpr(KeyPathApplicationExpr *E) {
     printCommon(E, "keypath_application_expr");
@@ -2522,7 +2562,7 @@ public:
     }
   }
 
-  void printApplyExpr(ApplyExpr *E, std::string NodeName) {
+  void printApplyExpr(Expr *lExpr, Expr *rExpr, std::string rName = "#AA", std::string defaultSuffix = "(#AA)") {
     /*printCommon(E, NodeName);
     if (E->isSuper())
       PrintWithColorRAII(OS, ExprModifierColor) << " super";
@@ -2539,14 +2579,6 @@ public:
     printRec(E->getArg());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    bool isDotMember = NodeName == "dot_syntax_call_expr";
-    
-    std::string rName = isDotMember ? "#R" : "#AA";
-    std::string defaultSuffix = isDotMember ? ".#R" : "(#AA)";
-    bool reversed = isDotMember;
-    Expr *lExpr = reversed ? E->getArg() : E->getFn();
-    Expr *rExpr = reversed ? E->getFn() : E->getArg();
-
     std::string lString = dumpToStr(lExpr);
     
     int special = 0;
@@ -2575,15 +2607,12 @@ public:
     else {
       std::string rString = dumpToStr(rExpr);
       //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
-      //we replace the #L with left-hand side there (or leave left-hand side altogether if no #L)
-      //that's needed e.g. for String.+= to get rid of the `String`
-      if(rString.find("#") != std::string::npos) {
-        if(rString.find("#L") != std::string::npos) {
-          lrString = std::regex_replace(rString, std::regex("#L"), lString);
-        }
-        else {
-          lrString = rString;
-        }
+      //we replace the #L with left-hand side there
+      if(rString.find("#L") != std::string::npos) {
+        lrString = std::regex_replace(rString, std::regex("#L"), lString);
+      }
+      else if(rString.find("#NOL") != std::string::npos) {
+        lrString = std::regex_replace(rString, std::regex("#NOL"), "");
       }
       //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
       //possibly change both to #NOR and #NOL if they should be omitted
@@ -2597,22 +2626,22 @@ public:
   }
 
   void visitCallExpr(CallExpr *E) {
-    printApplyExpr(E, "call_expr");
+    printApplyExpr(E->getFn(), E->getArg());
   }
   void visitPrefixUnaryExpr(PrefixUnaryExpr *E) {
-    printApplyExpr(E, "prefix_unary_expr");
+    printApplyExpr(E->getFn(), E->getArg());
   }
   void visitPostfixUnaryExpr(PostfixUnaryExpr *E) {
-    printApplyExpr(E, "postfix_unary_expr");
+    printApplyExpr(E->getFn(), E->getArg());
   }
   void visitBinaryExpr(BinaryExpr *E) {
-    printApplyExpr(E, "binary_expr");
+    printApplyExpr(E->getFn(), E->getArg());
   }
   void visitDotSyntaxCallExpr(DotSyntaxCallExpr *E) {
-    printApplyExpr(E, "dot_syntax_call_expr");
+    printApplyExpr(E->getArg(), E->getFn(), "#R", ".#R");
   }
   void visitConstructorRefCallExpr(ConstructorRefCallExpr *E) {
-    printApplyExpr(E, "constructor_ref_call_expr");
+    printApplyExpr(E->getFn(), E->getArg());
   }
   void visitDotSyntaxBaseIgnoredExpr(DotSyntaxBaseIgnoredExpr *E) {
     printCommon(E, "dot_syntax_base_ignored") << '\n';
