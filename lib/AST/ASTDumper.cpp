@@ -48,7 +48,8 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Dictionary extension.subscript(_:)", "#L.get(#AA)"},
   //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
   {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
-  {"Swift.(file).Optional.none", "null#NOL"}
+  {"Swift.(file).Optional.none", "null#NOL"},
+  {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
 };
 
 Expr *isAssignmentExpr = NULL;
@@ -75,6 +76,13 @@ std::string handleAssignment(Expr *lExpr, std::string rExpr) {
     setStr += " = #ASS";
   }
   return std::regex_replace(setStr, std::regex("#ASS"), rExpr);
+}
+
+Expr *skipInOutExpr(Expr *E) {
+  if (auto *inOutExpr = dyn_cast<InOutExpr>(E)) {
+    return inOutExpr->getSubExpr();
+  }
+  return E;
 }
 
 struct TerminalColor {
@@ -2190,8 +2198,6 @@ public:
     printRec(E->getIndex());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    //printApplyExpr(E->getBase(), E->getIndex(), "#AA", ".subcript");
-    
     std::string string;
     std::string memberIdentifier = getMemberIdentifier(E->getDecl());
     if(isAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
@@ -2210,7 +2216,7 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("#L"), dumpToStr(((InOutExpr*)E->getBase())->getSubExpr()));
+    string = std::regex_replace(string, std::regex("#L"), dumpToStr(skipInOutExpr(E->getBase())));
     
     string = std::regex_replace(string, std::regex("#AA"), dumpToStr(E->getIndex()));
     
@@ -2543,7 +2549,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitAutoClosureExpr(AutoClosureExpr *E) {
-    printClosure(E, "autoclosure_expr") << '\n';
+    /*printClosure(E, "autoclosure_expr") << '\n';
 
     if (E->getParameters()) {
       OS << '\n';
@@ -2552,7 +2558,9 @@ public:
 
     OS << '\n';
     printRec(E->getSingleExpressionBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    printRec(E->getSingleExpressionBody());
   }
 
   void visitDynamicTypeExpr(DynamicTypeExpr *E) {
@@ -2610,11 +2618,11 @@ public:
       TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        Expr *argExpr = i == 0 && special == 1 ? ((InOutExpr*)tuple->getElement(0))->getSubExpr() : tuple->getElement(i);
+        Expr *argExpr = i == 0 && special == 1 ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(i);
         lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(argExpr));
       }
       if(special == 1) {
-        lrString = handleAssignment(((InOutExpr*)tuple->getElement(0))->getSubExpr(), lrString);
+        lrString = handleAssignment(skipInOutExpr(tuple->getElement(0)), lrString);
       }
     }
     else {
