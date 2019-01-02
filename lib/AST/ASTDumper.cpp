@@ -44,10 +44,10 @@ using namespace swift;
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String extension.+=", "#A0 += #A1"}
+  {"Swift.(file).String extension.+=", "+#specialass"}
 };
 
-const Expr *isAssignmentExpr = NULL;
+Expr *isAssignmentExpr = NULL;
 
 std::string dumpToStr(Expr *E) {
   std::string str;
@@ -1958,11 +1958,13 @@ public:
       << " function_ref=" << getFunctionRefKindStr(E->getFunctionRefKind());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string string = E->getDeclRef().getDecl()->getFullName().getBaseIdentifier().get();
-
+    std::string string;
     std::string memberIdentifier = dumpToStr(E->getDeclRef());
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
+    }
+    else {
+      string = E->getDeclRef().getDecl()->getFullName().getBaseIdentifier().get();
     }
     
     bool isInOut = false;
@@ -2055,11 +2057,13 @@ public:
     printRec(E->getBase());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string rString = E->getMember().getDecl()->getFullName().getBaseIdentifier().get();
-    
+    std::string rString;
     std::string memberIdentifier = dumpToStr(E->getMember());
     if(REPLACEMENTS.count(memberIdentifier)) {
       rString = REPLACEMENTS.at(memberIdentifier);
+    }
+    else {
+      rString = E->getMember().getDecl()->getFullName().getBaseIdentifier().get();
     }
     
     std::string lName = "#L";
@@ -2128,19 +2132,9 @@ public:
     }
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string arr[E->getNumElements()];
-    visitTupleExpr(E, arr);
     for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
       if (i) OS << ", ";
-      OS << arr[i];
-    }
-  }
-  void visitTupleExpr(TupleExpr *E, std::string* arr) {
-    
-    for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
-      if (E->getElement(i)) {
-        arr[i] = dumpToStr(E->getElement(i));
-      }
+      OS << dumpToStr(E->getElement(i));
     }
   }
   void visitArrayExpr(ArrayExpr *E) {
@@ -2550,24 +2544,36 @@ public:
     std::string rName = isDotMember ? "#R" : "#AA";
     std::string defaultSuffix = isDotMember ? ".#R" : "(#AA)";
     bool reversed = isDotMember;
+    Expr *lExpr = reversed ? E->getArg() : E->getFn();
+    Expr *rExpr = reversed ? E->getFn() : E->getArg();
+
+    std::string lString = dumpToStr(lExpr);
     
-    std::string lString = dumpToStr(reversed ? E->getArg() : E->getFn());
+    int special = 0;
+    //slightly bodgy way to achieve replacing String.+= with `#A0 = #A0 + #A1` (special=1)
+    //we need to get rid of the inout replacement (no {get,set} = {get,set} + #A1)
+    //and invoke handleAssignment to handle cases when #A0 is e.g. an inout param
+    if(lString.find("#specialass") != std::string::npos) {
+      lString = "#A0 " + lString.substr(0, lString.find("#specialass")) + " #A1";
+      special = 1;
+    }
     
     std::string lrString;
-    
     if(std::regex_search(lString, std::regex("#A[0-9]"))) {
       //if the replacement references specific arguments e.g. #A0 #A1
       //we can't accept the right-hand side as a single string; we need an array of arguments
-      TupleExpr *tuple = (TupleExpr*)E->getArg();
-      std::string arr[tuple->getNumElements()];
-      visitTupleExpr(tuple, arr);
+      TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), arr[i]);
+        Expr *argExpr = i == 0 && special == 1 ? ((InOutExpr*)tuple->getElement(0))->getSubExpr() : tuple->getElement(i);
+        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(argExpr));
+      }
+      if(special == 1) {
+        lrString = handleAssignment(((InOutExpr*)tuple->getElement(0))->getSubExpr(), lrString);
       }
     }
     else {
-      std::string rString = dumpToStr(reversed ? E->getFn() : E->getArg());
+      std::string rString = dumpToStr(rExpr);
       //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
       //we replace the #L with left-hand side there (or leave left-hand side altogether if no #L)
       //that's needed e.g. for String.+= to get rid of the `String`
