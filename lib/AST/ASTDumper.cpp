@@ -44,13 +44,16 @@ using namespace swift;
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String extension.+=", "+#specialass"},
+  {"Swift.(file).String extension.+=", "+#specialbinary"},
   {"Swift.(file).Dictionary extension.subscript(_:)", "#L.get(#AA)"},
-  {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }"},
+  //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
+  {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
   {"Swift.(file).Optional.none", "null#NOL"}
 };
 
 Expr *isAssignmentExpr = NULL;
+
+std::string optionalCondition = "";//TODO might need to use a stack for nested optionals
 
 std::string dumpToStr(Expr *E) {
   std::string str;
@@ -1913,7 +1916,7 @@ public:
   }
   void visitInterpolatedStringLiteralExpr(InterpolatedStringLiteralExpr *E) {
     printCommon(E, "interpolated_string_literal_expr");
-    PrintWithColorRAII(OS, LiteralValueColor) << " literal_capacity=" 
+    PrintWithColorRAII(OS, LiteralValueColor) << " literal_capacity="
       << E->getLiteralCapacity() << " interpolation_count="
       << E->getInterpolationCount() << '\n';
     printRec(E->getAppendingExpr());
@@ -1936,7 +1939,7 @@ public:
   }
 
   void visitObjectLiteralExpr(ObjectLiteralExpr *E) {
-    printCommon(E, "object_literal") 
+    printCommon(E, "object_literal")
       << " kind='" << E->getLiteralKindPlainName() << "'";
     printArgumentLabels(E->getArgumentLabels());
     OS << "\n";
@@ -2381,9 +2384,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitInjectIntoOptionalExpr(InjectIntoOptionalExpr *E) {
-    printCommon(E, "inject_into_optional") << '\n';
+    /*printCommon(E, "inject_into_optional") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitClassMetatypeToObjectExpr(ClassMetatypeToObjectExpr *E) {
     printCommon(E, "class_metatype_to_object") << '\n';
@@ -2440,9 +2443,19 @@ public:
     
     std::string getStr = dumpToStr(E->getSubExpr());
     
-    std::string setStr = handleAssignment(E->getSubExpr(), "$val");
+    bool isOptionalWrapper = false;
+    if (auto *subExpr = dyn_cast<BindOptionalExpr>(E->getSubExpr())) {
+      isOptionalWrapper = true;
+    }
     
-    OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
+    if(isOptionalWrapper) {
+      OS << getStr;
+    }
+    else {
+      std::string setStr = handleAssignment(E->getSubExpr(), "$val");
+      
+      OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
+    }
   }
 
   void visitVarargExpansionExpr(VarargExpansionExpr *E) {
@@ -2502,7 +2515,7 @@ public:
       OS << " ";
       E->getCaptureInfo().print(PrintWithColorRAII(OS, CapturesColor).getOS());
     }
-    // Printing a function type doesn't indicate whether it's escaping because it doesn't 
+    // Printing a function type doesn't indicate whether it's escaping because it doesn't
     // matter in 99% of contexts. AbstractClosureExpr nodes are one of the only exceptions.
     if (auto Ty = GetTypeOfExpr(E))
       if (!Ty->getAs<AnyFunctionType>()->getExtInfo().isNoEscape())
@@ -2582,11 +2595,11 @@ public:
     std::string lString = dumpToStr(lExpr);
     
     int special = 0;
-    //slightly bodgy way to achieve replacing String.+= with `#A0 = #A0 + #A1` (special=1)
-    //we need to get rid of the inout replacement (no {get,set} = {get,set} + #A1)
+    //special=1 slightly bodgy way to achieve e.g. replacing String.+= with `#A0 = #A0 + #A1`
+    //we need to get rid of the inout wrapper (no {get,set} = {get,set} + #A1)
     //and invoke handleAssignment to handle cases when #A0 is e.g. an inout param
-    if(lString.find("#specialass") != std::string::npos) {
-      lString = "#A0 " + lString.substr(0, lString.find("#specialass")) + " #A1";
+    if(lString.find("#specialbinary") != std::string::npos) {
+      lString = "#A0 " + lString.substr(0, lString.find("#specialbinary")) + " #A1";
       special = 1;
     }
     
@@ -2717,15 +2730,38 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitBindOptionalExpr(BindOptionalExpr *E) {
-    printCommon(E, "bind_optional_expr")
+    /*printCommon(E, "bind_optional_expr")
       << " depth=" << E->getDepth() << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string expr = dumpToStr(E->getSubExpr());
+    std::string condition = "((" + expr + ") != null)";
+    
+    optionalCondition = optionalCondition.length() ? optionalCondition + " && " + condition : condition;
+    
+    OS << expr;
   }
   void visitOptionalEvaluationExpr(OptionalEvaluationExpr *E) {
-    printCommon(E, "optional_evaluation_expr") << '\n';
+    /*printCommon(E, "optional_evaluation_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    optionalCondition = "";
+    std::string expr = dumpToStr(E->getSubExpr());
+    
+    /*bool isAssign = false;
+    if (auto *subExpr = dyn_cast<InjectIntoOptionalExpr>(E->getSubExpr())) {
+      if (auto *subSubExpr = dyn_cast<AssignExpr>(E->getSubExpr())) {
+        isAssign = true;
+      }
+    }
+    if(isAssign) {
+      OS << "if(" << optionalCondition << ") {" << expr << "}";
+    }
+    else {*/
+      OS << "((" << optionalCondition << ") ? (" << expr << ") : null)";
+    /*}*/
   }
   void visitForceValueExpr(ForceValueExpr *E) {
     printCommon(E, "force_value_expr") << '\n';
