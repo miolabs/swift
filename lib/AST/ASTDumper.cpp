@@ -56,17 +56,23 @@ Expr *isAssignmentExpr = NULL;
 
 std::string optionalCondition = "";//TODO might need to use a stack for nested optionals
 
+std::unordered_map<std::string, std::string> functionUniqueNames = {};
+std::unordered_map<std::string, int> functionOverloadedCounts = {};
+
 std::string dumpToStr(Expr *E) {
   std::string str;
   llvm::raw_string_ostream stream(str);
   E->dump(stream);
   return stream.str();
 }
-std::string getMemberIdentifier(ConcreteDeclRef E) {
+std::string getMemberIdentifier(ValueDecl *D) {
   std::string str;
   llvm::raw_string_ostream stream(str);
-  E.getDecl()->dumpRef(stream);
+  D->dumpRef(stream);
   return stream.str();
+}
+std::string getMemberIdentifier(ConcreteDeclRef D) {
+  return getMemberIdentifier(D.getDecl());
 }
 
 std::string handleAssignment(Expr *lExpr, std::string rExpr) {
@@ -83,6 +89,40 @@ Expr *skipInOutExpr(Expr *E) {
     return inOutExpr->getSubExpr();
   }
   return E;
+}
+
+std::string getFunctionName(FuncDecl *D) {
+  std::string uniqueIdentifier = getMemberIdentifier(D);
+  if(!functionUniqueNames.count(uniqueIdentifier)) {
+    std::string overloadIdentifier;
+    llvm::raw_string_ostream stream(overloadIdentifier);
+    printContext(stream, D->getDeclContext());
+    stream.flush();
+    overloadIdentifier += ".";
+    overloadIdentifier += D->getBaseName().userFacingName();
+    functionUniqueNames[uniqueIdentifier] = D->getBaseName().userFacingName();
+    if(functionOverloadedCounts.count(overloadIdentifier)) {
+      functionOverloadedCounts[overloadIdentifier] += 1;
+      functionUniqueNames[uniqueIdentifier] += std::to_string(functionOverloadedCounts[overloadIdentifier]);
+    }
+    else {
+      functionOverloadedCounts[overloadIdentifier] = 0;
+    }
+  }
+  return functionUniqueNames[uniqueIdentifier];
+}
+std::string getName(ValueDecl *D) {
+  while (auto *overriden = D->getOverriddenDecl()) {
+    D = overriden;
+  }
+  //TODO isProtocolRequirement which protocol?
+  //perhaps ArrayRef<ValueDecl *> getSatisfiedProtocolRequirements(bool Sorted = false)
+  
+  if(auto *functionDecl = dyn_cast<FuncDecl>(D)) {
+    return getFunctionName(functionDecl);
+  }
+  
+  return D->getBaseName().userFacingName();
 }
 
 struct TerminalColor {
@@ -1117,7 +1157,7 @@ namespace {
       printAbstractFunctionDecl(FD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      OS << "function " << FD->getBaseName().userFacingName() << " (";
+      OS << "function " << getName(FD) << " (";
       auto params = FD->getParameters();
       bool first = true;
       for (auto P : *params) {
@@ -1883,7 +1923,7 @@ public:
   }
 
   void visitIntegerLiteralExpr(IntegerLiteralExpr *E) {
-    printCommon(E, "integer_literal_expr");
+    /*printCommon(E, "integer_literal_expr");
     if (E->isNegative())
       PrintWithColorRAII(OS, LiteralValueColor) << " negative";
     PrintWithColorRAII(OS, LiteralValueColor) << " value=";
@@ -1892,20 +1932,23 @@ public:
       PrintWithColorRAII(OS, LiteralValueColor) << E->getDigitsText();
     else
       PrintWithColorRAII(OS, LiteralValueColor) << E->getValue();
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << E->getValue();
   }
   void visitFloatLiteralExpr(FloatLiteralExpr *E) {
-    printCommon(E, "float_literal_expr");
+    /*printCommon(E, "float_literal_expr");
     PrintWithColorRAII(OS, LiteralValueColor)
       << " value=" << E->getDigitsText();
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << E->getDigitsText();
   }
 
   void visitBooleanLiteralExpr(BooleanLiteralExpr *E) {
-    printCommon(E, "boolean_literal_expr");
+    /*printCommon(E, "boolean_literal_expr");
     PrintWithColorRAII(OS, LiteralValueColor)
       << " value=" << (E->getValue() ? "true" : "false");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << (E->getValue() ? "true" : "false");
   }
 
   void visitStringLiteralExpr(StringLiteralExpr *E) {
@@ -1923,13 +1966,23 @@ public:
     OS << QuotedString(E->getValue());
   }
   void visitInterpolatedStringLiteralExpr(InterpolatedStringLiteralExpr *E) {
-    printCommon(E, "interpolated_string_literal_expr");
+    /*printCommon(E, "interpolated_string_literal_expr");
     PrintWithColorRAII(OS, LiteralValueColor) << " literal_capacity="
       << E->getLiteralCapacity() << " interpolation_count="
       << E->getInterpolationCount() << '\n';
     printRec(E->getAppendingExpr());
     printSemanticExpr(E->getSemanticExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "((";
+    bool isFirst = true;
+    E->forEachSegment(E->getAppendingExpr()->getVar()->getDeclContext()->getASTContext(),
+        [&](bool isInterpolation, CallExpr *segment) -> void {
+        if(isFirst) isFirst = false;
+        else OS << ") + (";
+        printRec(segment->getArg());
+    });
+    OS << "))";
   }
   void visitMagicIdentifierLiteralExpr(MagicIdentifierLiteralExpr *E) {
     printCommon(E, "magic_identifier_literal_expr")
@@ -1978,7 +2031,7 @@ public:
       string = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      string = E->getDeclRef().getDecl()->getBaseName().userFacingName();
+      string = getName(E->getDeclRef().getDecl());
     }
     
     bool isInOut = false;
@@ -2077,7 +2130,7 @@ public:
       rString = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      rString = E->getMember().getDecl()->getBaseName().userFacingName();
+      rString = getName(E->getMember().getDecl());
     }
     
     std::string lName = "#L";
@@ -2599,6 +2652,18 @@ public:
     OS << '\n';
     printRec(E->getArg());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    if (auto rTuple = dyn_cast<TupleExpr>(rExpr)) {
+      if (auto intExpr = dyn_cast<IntegerLiteralExpr>(rTuple->getElement(0))) {
+        return printRec(intExpr);
+      }
+      if (auto floatExpr = dyn_cast<FloatLiteralExpr>(rTuple->getElement(0))) {
+        return printRec(floatExpr);
+      }
+      if (auto boolExpr = dyn_cast<BooleanLiteralExpr>(rTuple->getElement(0))) {
+        return printRec(boolExpr);
+      }
+    }
     
     std::string lString = dumpToStr(lExpr);
     
