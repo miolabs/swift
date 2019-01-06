@@ -97,9 +97,6 @@ std::string getMemberIdentifier(ValueDecl *D) {
   D->dumpRef(stream);
   return stream.str();
 }
-std::string getMemberIdentifier(ConcreteDeclRef D) {
-  return getMemberIdentifier(D.getDecl());
-}
 
 std::string handleLAssignment(Expr *lExpr, std::string rExpr) {
   lAssignmentExpr = lExpr;
@@ -132,8 +129,8 @@ std::string getFunctionName(AbstractFunctionDecl *D) {
     //DeclContext: Decl getAsDecl() bool isTypeContext() ClassDecl *getSelfClassDecl()
     /*llvm::raw_string_ostream stream(overloadIdentifier);
     printContext(stream, D->getDeclContext());
-    stream.flush();*/
-    overloadIdentifier += ".";
+    stream.flush();
+    overloadIdentifier += ".";*/
     overloadIdentifier += D->getBaseName().userFacingName();
     functionUniqueNames[uniqueIdentifier] = D->getBaseName().userFacingName();
     if(functionOverloadedCounts.count(overloadIdentifier)) {
@@ -146,14 +143,16 @@ std::string getFunctionName(AbstractFunctionDecl *D) {
   }
   return functionUniqueNames[uniqueIdentifier];
 }
-std::string getName(ValueDecl *D) {
+std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 0) {
   while (auto *overriden = D->getOverriddenDecl()) {
     D = overriden;
   }
-  if(!D->getSatisfiedProtocolRequirements().empty()) {
-    //TODO for D->getSatisfiedProtocolRequirements().size() > 1, check ambiguous-protocol-requirement.swift
-    D = D->getSatisfiedProtocolRequirements().front();
+  auto satisfiedProtocolRequirements = D->getSatisfiedProtocolRequirements();
+  if(!satisfiedProtocolRequirements.empty()) {
+    if(satisfiedProtocolRequirementI >= satisfiedProtocolRequirements.size()) return "!NO_DUPLICATE";
+    D = D->getSatisfiedProtocolRequirements()[satisfiedProtocolRequirementI];
   }
+  else if(satisfiedProtocolRequirementI > 0) return "!NO_DUPLICATE";
   
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
     return getFunctionName(functionDecl);
@@ -771,7 +770,9 @@ namespace {
     }
 
     void visitTypeAliasDecl(TypeAliasDecl *TAD) {
-      printCommon(TAD, "typealias");
+      //we should be ignoring typealiases for associatedtypes, i.e. within class that conforms to protocol
+      //but explicitly defined typealiases are fine I guess
+      /*printCommon(TAD, "typealias");
       PrintWithColorRAII(OS, TypeColor) << " type='";
       if (TAD->getUnderlyingTypeLoc().getType()) {
         PrintWithColorRAII(OS, TypeColor)
@@ -780,7 +781,7 @@ namespace {
         PrintWithColorRAII(OS, TypeColor) << "<<<unresolved>>>";
       }
       printInherited(TAD->getInherited());
-      OS << "')";
+      OS << "')";*/
     }
 
     void printAbstractTypeParamCommon(AbstractTypeParamDecl *decl,
@@ -800,7 +801,7 @@ namespace {
     }
 
     void visitAssociatedTypeDecl(AssociatedTypeDecl *decl) {
-      printAbstractTypeParamCommon(decl, "associated_type_decl");
+      /*printAbstractTypeParamCommon(decl, "associated_type_decl");
       if (auto defaultDef = decl->getDefaultDefinitionType()) {
         OS << " default=";
         defaultDef.print(OS);
@@ -821,7 +822,7 @@ namespace {
                    });
       }
 
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitProtocolDecl(ProtocolDecl *PD) {
@@ -1072,6 +1073,26 @@ namespace {
       std::string name = kind == "protocol" ? "interface" : "class";
       OS << name << " " << getName(D) << "";
       
+      if(kind == "protocol") {
+        bool wasAssociatedType = false;
+        for (Decl *subD : D->getMembers()) {
+          if(auto *associatedTypeDecl = dyn_cast<AssociatedTypeDecl>(subD)) {
+            if(!wasAssociatedType) {
+              OS << "<";
+              wasAssociatedType = true;
+            }
+            else {
+              OS << ", ";
+            }
+            OS << associatedTypeDecl->getFullName();
+          }
+        }
+        if(wasAssociatedType) OS << ">";
+      }
+      else {
+        printGenericParameters(OS, D->getGenericParams());
+      }
+
       auto Inherited = D->getInherited();
       bool wasClass = false, wasProtocol = false;
       if(!Inherited.empty()) {
@@ -1104,16 +1125,18 @@ namespace {
         printRec(subD);
       }
       
-      OS << "\nconstructor(signature: string, ...params: any[]) {";
-      if(wasClass) {
-        OS << "\nsuper(null)";
-      }
-      for (Decl *subD : D->getMembers()) {
-        if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
-          OS << "\nif(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
+      if(kind != "protocol") {
+        OS << "\nconstructor(signature: string, ...params: any[]) {";
+        if(wasClass) {
+          OS << "\nsuper(null)";
         }
+        for (Decl *subD : D->getMembers()) {
+          if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
+            OS << "\nif(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
+          }
+        }
+        OS << "\n}";
       }
-      OS << "\n}";
 
       OS << "\n}";
     }
@@ -1325,19 +1348,31 @@ namespace {
       if(!FD->getDeclContext()->isTypeContext()) {
         OS << "function ";
       }
+      std::string functionName = getName(FD);
       if(!ignoreName) {
-        OS << getName(FD) << " ";
+        OS << functionName << " ";
       }
-      OS << "(";
+
+      std::string signature = "";
+      std::string genericStr;
+      llvm::raw_string_ostream genericStream(genericStr);
+      printGenericParameters(genericStream, FD->getGenericParams());
+      signature += genericStream.str();
+      signature += "(";
       
       auto params = FD->getParameters();
       bool first = true;
       for (auto P : *params) {
         if(first) first = false;
-        else OS << ", ";
-        printParameter(P, OS);
+        else signature += ", ";
+        std::string parameterStr;
+        llvm::raw_string_ostream parameterStream(parameterStr);
+        printParameter(P, parameterStream);
+        signature += parameterStream.str();
       }
-      OS << ")";
+      signature += ")";
+      
+      OS << signature;
       
       if (FD -> isMemberwiseInitializer()) {
         OS << "{";
@@ -1347,13 +1382,23 @@ namespace {
           //but not sure how to get member_ref_expr (self.`P->getFullName()`)
           OS << "this." << P->getFullName() << " = " << P->getFullName();
         }
-        OS << '\n' << "}";
+        OS << "\n}";
       }
       else if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
-        OS << "{";
-        OS << '\n';
+        OS << "{\n";
         printRec(Body, FD->getASTContext(), OS);
-        OS << '\n' << "}";
+        OS << "\n}";
+      }
+      
+      if(FD->getDeclContext()->isTypeContext() && !ignoreName) {
+        unsigned long i = 1;
+        while(true) {
+          std::string duplicateName = getName(FD, i);
+          if(duplicateName == "!NO_DUPLICATE") break;
+          OS << "\n" << duplicateName << signature;
+          OS << "{\nthis." << functionName << ".apply(this,arguments)\n}";
+          i++;
+        }
       }
     }
 
@@ -2284,7 +2329,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = getMemberIdentifier(E->getDeclRef());
+    std::string memberIdentifier = getMemberIdentifier(E->getDeclRef().getDecl());
     //OS << "/*" << memberIdentifier << "*/";
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
@@ -2395,7 +2440,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string rString;
-    std::string memberIdentifier = getMemberIdentifier(E->getMember());
+    std::string memberIdentifier = getMemberIdentifier(E->getMember().getDecl());
     //OS << "/*" << memberIdentifier << "*/";
     if(REPLACEMENTS.count(memberIdentifier)) {
       rString = REPLACEMENTS.at(memberIdentifier);
@@ -2523,7 +2568,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = getMemberIdentifier(E->getDecl());
+    std::string memberIdentifier = getMemberIdentifier(E->getDecl().getDecl());
     if(lAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
       string = REPLACEMENTS.at(memberIdentifier + "#ASS");
     }
