@@ -43,20 +43,24 @@
 using namespace swift;
 
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
-  {"Swift.(file).String extension.count", "#L.length"},
+  {"Swift.(file).String.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String extension.+=", "#specialbinaryass+"},
+  {"Swift.(file).String.+=", "#specialbinaryass+"},
   {"Swift.(file).Int.+=", "#specialbinaryass+"},
   {"Swift.(file).Int.==", "#specialbinary=="},
-  {"Swift.(file).Int.>", "#specialbinary<"},
+  {"Swift.(file).Int.>", "#specialbinary>"},
   {"Swift.(file).Int.<", "#specialbinary<"},
   {"Swift.(file).Double.+", "#specialbinary+"},
-  {"Swift.(file).Int extension.+", "#specialbinary+"},
-  {"Swift.(file).Int extension.-", "#specialbinary-"},
-  {"Swift.(file).Int extension./", "#specialbinary/"},
-  {"Swift.(file).Dictionary extension.subscript(_:)", "#L.get(#AA)"},
+  {"Swift.(file).Double.-", "#specialbinary-"},
+  {"Swift.(file).Double.*", "#specialbinary*"},
+  {"Swift.(file).Double./", "#specialbinary/"},
+  {"Swift.(file).Int.+", "#specialbinary+"},
+  {"Swift.(file).Int.-", "#specialbinary-"},
+  {"Swift.(file).Int.*", "#specialbinary*"},
+  {"Swift.(file).Int./", "#specialbinary/"},
+  {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
   //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
-  {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
+  {"Swift.(file).Dictionary.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
   {"Swift.(file).Optional.none", "null#NOL"},
   {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
 };
@@ -65,6 +69,13 @@ const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).String", false},
   {"Swift.(file).Double", false},
   {"Swift.(file).Bool", false}
+};
+const std::unordered_map<std::string, std::string> REPLACEMENTS_TYPE = {
+  {"Swift.(file).Int", "number"},
+  {"Swift.(file).Double", "number"},
+  {"Swift.(file).String", "string"},
+  {"Swift.(file).Bool", "boolean"},
+  {"Swift.(file).Dictionary", "Map"}
 };
 
 Expr *lAssignmentExpr = NULL;
@@ -107,7 +118,7 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
       }
     }
     if(!isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl))) {
-      baseStr = "_.cloneStruct(" + baseStr + ")!";
+      baseStr = "_.cloneStruct(" + baseStr + ")";
     }
   }
   return baseStr;
@@ -152,17 +163,21 @@ std::string getName(ValueDecl *D) {
 }
 
 std::string getType(Type T) {
-  std::string str;
-  llvm::raw_string_ostream stream(str);
-  //AnyMetatypeTypeT->getInstanceType()
   if(auto *metatypeType = dyn_cast<AnyMetatypeType>(T.getPointer())) {
     //that's to display e.g. `Double` instead of `Double.Type` when referring to the class itself
-    metatypeType->getInstanceType()->print(stream);
+    T = metatypeType->getInstanceType();
   }
-  else {
-    T->print(stream);
+
+  if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
+    std::string memberIdentifier = getMemberIdentifier(nominalDecl);
+    if(REPLACEMENTS_TYPE.count(memberIdentifier)) {
+      return REPLACEMENTS_TYPE.at(memberIdentifier);
+    }
   }
-  //TODO translate
+  
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  T->print(stream);
   return stream.str();
 }
 
@@ -992,9 +1007,9 @@ namespace {
           if(willSetStr.length()) OS << "\nfunction $willSet" << willSetStr;
           if(didSetStr.length()) OS << "\nfunction $didSet" << didSetStr;
           OS << "\nlet $oldValue = this." << varName << "$val";
-          if(willSetStr.length()) OS << "\nwillSet($newValue)";
-          OS << "\nlet $oldValue = this." << varName << "$val = newValue";
-          if(didSetStr.length()) OS << "\ndidSet($oldValue)";
+          if(willSetStr.length()) OS << "\n$willSet.call(this, $newValue)";
+          OS << "\nthis." << varName << "$val = $newValue";
+          if(didSetStr.length()) OS << "\n$didSet.call(this, $oldValue)";
           OS << "\n}";
         }
       }
@@ -1090,6 +1105,9 @@ namespace {
       }
       
       OS << "\nconstructor(signature: string, ...params: any[]) {";
+      if(wasClass) {
+        OS << "\nsuper(null)";
+      }
       for (Decl *subD : D->getMembers()) {
         if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
           OS << "\nif(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
@@ -1600,7 +1618,7 @@ void swift::printContext(raw_ostream &os, DeclContext *dc) {
     if (auto extendedNominal = cast<ExtensionDecl>(dc)->getExtendedNominal()) {
       printName(os, extendedNominal->getName());
     }
-    os << " extension";
+    //os << " extension";
     break;
 
   case DeclContextKind::Initializer:
@@ -2873,8 +2891,8 @@ public:
   }
 
   void visitOpaqueValueExpr(OpaqueValueExpr *E) {
-    printCommon(E, "opaque_value_expr") << " @ " << (void*)E;
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(E, "opaque_value_expr") << " @ " << (void*)E;
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void printArgumentLabels(ArrayRef<Identifier> argLabels) {
@@ -3106,18 +3124,18 @@ public:
     /*}*/
   }
   void visitForceValueExpr(ForceValueExpr *E) {
-    printCommon(E, "force_value_expr") << '\n';
+    //printCommon(E, "force_value_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitOpenExistentialExpr(OpenExistentialExpr *E) {
-    printCommon(E, "open_existential_expr") << '\n';
+    //printCommon(E, "open_existential_expr") << '\n';
     printRec(E->getOpaqueValue());
     OS << '\n';
     printRec(E->getExistentialValue());
     OS << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitMakeTemporarilyEscapableExpr(MakeTemporarilyEscapableExpr *E) {
     printCommon(E, "make_temporarily_escapable_expr") << '\n';
