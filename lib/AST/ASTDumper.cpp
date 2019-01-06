@@ -17,6 +17,7 @@
 #include <string>
 #include <regex>
 #include <unordered_map>
+#include <iostream>
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
@@ -44,15 +45,29 @@ using namespace swift;
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String extension.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String extension.+=", "+#specialbinary"},
+  {"Swift.(file).String extension.+=", "#specialbinaryass+"},
+  {"Swift.(file).Int.+=", "#specialbinaryass+"},
+  {"Swift.(file).Int.==", "#specialbinary=="},
+  {"Swift.(file).Int.>", "#specialbinary<"},
+  {"Swift.(file).Int.<", "#specialbinary<"},
+  {"Swift.(file).Double.+", "#specialbinary+"},
+  {"Swift.(file).Int extension.+", "#specialbinary+"},
+  {"Swift.(file).Int extension.-", "#specialbinary-"},
+  {"Swift.(file).Int extension./", "#specialbinary/"},
   {"Swift.(file).Dictionary extension.subscript(_:)", "#L.get(#AA)"},
   //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
   {"Swift.(file).Dictionary extension.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
   {"Swift.(file).Optional.none", "null#NOL"},
   {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
 };
+const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
+  {"Swift.(file).Int", false},
+  {"Swift.(file).String", false},
+  {"Swift.(file).Double", false},
+  {"Swift.(file).Bool", false}
+};
 
-Expr *isAssignmentExpr = NULL;
+Expr *lAssignmentExpr = NULL;
 
 std::string optionalCondition = "";//TODO might need to use a stack for nested optionals
 
@@ -75,29 +90,38 @@ std::string getMemberIdentifier(ConcreteDeclRef D) {
   return getMemberIdentifier(D.getDecl());
 }
 
-std::string handleAssignment(Expr *lExpr, std::string rExpr) {
-  isAssignmentExpr = lExpr;
+std::string handleLAssignment(Expr *lExpr, std::string rExpr) {
+  lAssignmentExpr = lExpr;
   std::string setStr = dumpToStr(lExpr);
   if(setStr.find("#ASS") == std::string::npos) {
     setStr += " = #ASS";
   }
   return std::regex_replace(setStr, std::regex("#ASS"), rExpr);
 }
-
-Expr *skipInOutExpr(Expr *E) {
-  if (auto *inOutExpr = dyn_cast<InOutExpr>(E)) {
-    return inOutExpr->getSubExpr();
+std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
+  if (auto *structDecl = rExpr->getType()->getStructOrBoundGenericStruct()) {
+    bool isInitializer = false;
+    if (auto *callExpr = dyn_cast<CallExpr>(rExpr)) {
+      if (auto *constructorRefCallExpr = dyn_cast<ConstructorRefCallExpr>(callExpr->getFn())) {
+        isInitializer = true;
+      }
+    }
+    if(!isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl))) {
+      baseStr = "_.cloneStruct(" + baseStr + ")!";
+    }
   }
-  return E;
+  return baseStr;
 }
 
-std::string getFunctionName(FuncDecl *D) {
+std::string getFunctionName(AbstractFunctionDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   if(!functionUniqueNames.count(uniqueIdentifier)) {
     std::string overloadIdentifier;
-    llvm::raw_string_ostream stream(overloadIdentifier);
+    //TODO can't just use current context; need to use context of base super class [e.g. initializers.swift]
+    //DeclContext: Decl getAsDecl() bool isTypeContext() ClassDecl *getSelfClassDecl()
+    /*llvm::raw_string_ostream stream(overloadIdentifier);
     printContext(stream, D->getDeclContext());
-    stream.flush();
+    stream.flush();*/
     overloadIdentifier += ".";
     overloadIdentifier += D->getBaseName().userFacingName();
     functionUniqueNames[uniqueIdentifier] = D->getBaseName().userFacingName();
@@ -115,14 +139,31 @@ std::string getName(ValueDecl *D) {
   while (auto *overriden = D->getOverriddenDecl()) {
     D = overriden;
   }
-  //TODO isProtocolRequirement which protocol?
-  //perhaps ArrayRef<ValueDecl *> getSatisfiedProtocolRequirements(bool Sorted = false)
+  if(!D->getSatisfiedProtocolRequirements().empty()) {
+    //TODO for D->getSatisfiedProtocolRequirements().size() > 1, check ambiguous-protocol-requirement.swift
+    D = D->getSatisfiedProtocolRequirements().front();
+  }
   
-  if(auto *functionDecl = dyn_cast<FuncDecl>(D)) {
+  if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
     return getFunctionName(functionDecl);
   }
   
   return D->getBaseName().userFacingName();
+}
+
+std::string getType(Type T) {
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  //AnyMetatypeTypeT->getInstanceType()
+  if(auto *metatypeType = dyn_cast<AnyMetatypeType>(T.getPointer())) {
+    //that's to display e.g. `Double` instead of `Double.Type` when referring to the class itself
+    metatypeType->getInstanceType()->print(stream);
+  }
+  else {
+    T->print(stream);
+  }
+  //TODO translate
+  return stream.str();
 }
 
 struct TerminalColor {
@@ -633,6 +674,7 @@ namespace {
     void printRec(Decl *D) { PrintDecl(OS, Indent + 2).visit(D); }
     void printRec(Expr *E) { E->dump(OS, Indent+2); }
     void printRec(Stmt *S, const ASTContext &Ctx) { S->dump(OS, &Ctx, Indent+2); }
+    void printRec(Stmt *S, const ASTContext &Ctx, raw_ostream &os) { S->dump(os, &Ctx, Indent+2); }
     void printRec(Pattern *P) { PrintPattern(OS, Indent+2).visit(P); }
     void printRec(TypeRepr *T);
 
@@ -768,7 +810,7 @@ namespace {
     }
 
     void visitProtocolDecl(ProtocolDecl *PD) {
-      printCommon(PD, "protocol");
+      /*printCommon(PD, "protocol");
 
       OS << " requirement signature=";
       if (PD->isRequirementSignatureComputed()) {
@@ -790,7 +832,9 @@ namespace {
         OS << '\n';
         printRec(VD);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      visitAnyStructDecl(PD, "protocol");
     }
 
     void printCommon(ValueDecl *VD, const char *Name,
@@ -895,12 +939,65 @@ namespace {
       printAccessors(VD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
+      std::string varName;
+      llvm::raw_string_ostream stream(varName);
+      VD->getFullName().print(stream);
+      stream.flush();
       
-      //in order to know if var/let, we're invoking visitPatternBindingDecl from here
-      //and ignoring the 'native' invokation
-      OS << (VD->isLet() ? "const" : "let") << " ";
-      OS << VD->getFullName() << " = ";
-      visitPatternBindingDecl2(VD->getParentPatternBinding());
+      std::string getterSetterStr = "";
+      std::string willSetStr = "";
+      std::string didSetStr = "";
+
+      for (auto accessor : VD->getAllAccessors()) {
+        //swift autogenerates getter/setters for regular vars; no need to display them
+        if(accessor->isImplicit()) continue;
+        std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+
+        std::string bodyStr;
+        llvm::raw_string_ostream stream(bodyStr);
+        visitAbstractFuncDecl(accessor, stream, true);
+        stream.flush();
+        
+        if(accessorType == "get" || accessorType == "set") {
+          getterSetterStr += "\n" + accessorType + " " + varName + bodyStr;
+        }
+        else if(accessorType == "willSet") {
+          willSetStr = bodyStr;
+        }
+        else if(accessorType == "didSet") {
+          didSetStr = bodyStr;
+        }
+        else {
+          llvm_unreachable((accessorType + " accessor not supported").c_str());
+        }
+      }
+      
+      if(getterSetterStr.length()) {
+        OS << getterSetterStr;
+      }
+      else {
+        if(!VD->getDeclContext()->isTypeContext()) {
+          OS << (VD->isLet() ? "const" : "let") << " ";
+        }
+        OS << varName;
+        if(willSetStr.length() || didSetStr.length()) OS << "$val";
+        if (auto initializer = VD->getParentInitializer()) {
+          OS << " = " << handleRAssignment(initializer, dumpToStr(initializer));
+        }
+        
+        if(willSetStr.length() || didSetStr.length()) {
+          //willSet/didSet don't allow getter or setter, so we're safe
+          OS << "\nget " << varName << "() { return this." << varName << "$val }";
+          OS << "\nset " << varName << "($newValue) {";
+          if(willSetStr.length()) OS << "\nfunction $willSet" << willSetStr;
+          if(didSetStr.length()) OS << "\nfunction $didSet" << didSetStr;
+          OS << "\nlet $oldValue = this." << varName << "$val";
+          if(willSetStr.length()) OS << "\nwillSet($newValue)";
+          OS << "\nlet $oldValue = this." << varName << "$val = newValue";
+          if(didSetStr.length()) OS << "\ndidSet($oldValue)";
+          OS << "\n}";
+        }
+      }
     }
 
     void printStorageImpl(AbstractStorageDecl *D) {
@@ -929,7 +1026,7 @@ namespace {
     }
 
     void visitParamDecl(ParamDecl *PD) {
-      printParameter(PD);
+      printParameter(PD, OS);
     }
 
     void visitEnumCaseDecl(EnumCaseDecl *ECD) {
@@ -955,19 +1052,67 @@ namespace {
       printCommon(EED, "enum_element_decl");
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
+    
+    void visitAnyStructDecl(NominalTypeDecl *D, std::string kind) {
+      std::string name = kind == "protocol" ? "interface" : "class";
+      OS << name << " " << getName(D) << "";
+      
+      auto Inherited = D->getInherited();
+      bool wasClass = false, wasProtocol = false;
+      if(!Inherited.empty()) {
+        for(auto Super : Inherited) {
+          bool isProtocol = false;
+          if (auto *protocol = dyn_cast<ProtocolType>(Super.getType().getPointer())) { isProtocol = true; }
+          if ((isProtocol ? wasProtocol : wasClass)) {
+            OS << ", ";
+          }
+          else if(isProtocol) {
+            OS << (kind == "protocol" ? " extends " : " implements ");
+            wasProtocol = true;
+          }
+          else {
+            OS << " extends ";
+            wasClass = true;
+          }
+          OS << getType(Super.getType());
+        }
+      }
+      
+      OS << "{";
+      
+      if(kind == "struct") {
+        OS << "\n$struct = true";
+      }
+
+      for (Decl *subD : D->getMembers()) {
+        OS << '\n';
+        printRec(subD);
+      }
+      
+      OS << "\nconstructor(signature: string, ...params: any[]) {";
+      for (Decl *subD : D->getMembers()) {
+        if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
+          OS << "\nif(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
+        }
+      }
+      OS << "\n}";
+
+      OS << "\n}";
+    }
 
     void visitStructDecl(StructDecl *SD) {
-      printCommon(SD, "struct_decl");
+      /*printCommon(SD, "struct_decl");
       printInherited(SD->getInherited());
       for (Decl *D : SD->getMembers()) {
         OS << '\n';
         printRec(D);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      visitAnyStructDecl(SD, "struct");
     }
 
     void visitClassDecl(ClassDecl *CD) {
-      printCommon(CD, "class_decl");
+      /*printCommon(CD, "class_decl");
       if (CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>())
         OS << " @_staticInitializeObjCMetadata";
       printInherited(CD->getInherited());
@@ -975,7 +1120,8 @@ namespace {
         OS << '\n';
         printRec(D);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      visitAnyStructDecl(CD, "class");
     }
 
     void visitPatternBindingDecl(PatternBindingDecl *PBD) {
@@ -990,15 +1136,6 @@ namespace {
         }
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    }
-
-    void visitPatternBindingDecl2(PatternBindingDecl *PBD) {
-      
-      for (auto entry : PBD->getPatternList()) {
-        if (entry.getInit()) {
-          printRec(entry.getInit());
-        }
-      }
     }
     
     void visitSubscriptDecl(SubscriptDecl *SD) {
@@ -1032,7 +1169,7 @@ namespace {
       }
     }
 
-    void printParameter(const ParamDecl *P) {
+    void printParameter(const ParamDecl *P, raw_ostream &OS) {
       /*OS.indent(Indent);
       PrintWithColorRAII(OS, ParenthesisColor) << '(';
       PrintWithColorRAII(OS, ParameterColor) << "parameter ";
@@ -1088,7 +1225,20 @@ namespace {
 
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      OS << P->getFullName() << ": " << P->getType();
+      OS << P->getFullName();
+      
+      if(P->hasType()) {
+        OS << ": " << getType(P->getType());
+      }
+      else if(P->hasInterfaceType()) {
+        //not sure what that's about
+        OS << ": " << getType(P->getInterfaceType());
+      }
+      
+      if (auto init = P->getDefaultValue()) {
+        OS << " = ";
+        printRec(init);
+      }
     }
 
     void printParameterList(const ParameterList *params, const ASTContext *ctx = nullptr) {
@@ -1098,7 +1248,7 @@ namespace {
       Indent += 2;
       for (auto P : *params) {
         OS << '\n';
-        printParameter(P);
+        printParameter(P, OS);
       }
 
       if (!ctx && params->size() != 0 && params->get(0))
@@ -1121,7 +1271,7 @@ namespace {
       Indent += 2;
       if (auto *P = D->getImplicitSelfDecl()) {
         OS << '\n';
-        printParameter(P);
+        printParameter(P, OS);
       }
 
       OS << '\n';
@@ -1151,38 +1301,61 @@ namespace {
       if (FD->isStatic())
         OS << " type";
     }
-
-    void visitFuncDecl(FuncDecl *FD) {
-      /*printCommonFD(FD, "func_decl");
-      printAbstractFunctionDecl(FD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    void visitAbstractFuncDecl(AbstractFunctionDecl *FD, raw_ostream &OS, bool ignoreName = false) {
       
-      OS << "function " << getName(FD) << " (";
+      if(!FD->getDeclContext()->isTypeContext()) {
+        OS << "function ";
+      }
+      if(!ignoreName) {
+        OS << getName(FD) << " ";
+      }
+      OS << "(";
+      
       auto params = FD->getParameters();
       bool first = true;
       for (auto P : *params) {
         if(first) first = false;
         else OS << ", ";
-        printParameter(P);
+        printParameter(P, OS);
       }
-      OS << ") {";
-      if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
+      OS << ")";
+      
+      if (FD -> isMemberwiseInitializer()) {
+        OS << "{";
+        for (auto P : *params) {
+          OS << '\n';
+          //TODO this should be using handleLAssignment
+          //but not sure how to get member_ref_expr (self.`P->getFullName()`)
+          OS << "this." << P->getFullName() << " = " << P->getFullName();
+        }
+        OS << '\n' << "}";
+      }
+      else if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
+        OS << "{";
         OS << '\n';
-        printRec(Body, FD->getASTContext());
+        printRec(Body, FD->getASTContext(), OS);
+        OS << '\n' << "}";
       }
-      OS << '\n' << "}";
+    }
+
+    void visitFuncDecl(FuncDecl *FD) {
+      /*printCommonFD(FD, "func_decl");
+      printAbstractFunctionDecl(FD);
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      visitAbstractFuncDecl(FD, OS);
     }
 
     void visitAccessorDecl(AccessorDecl *AD) {
-      printCommonFD(AD, "accessor_decl");
+      /*printCommonFD(AD, "accessor_decl");
       OS << " " << getAccessorKindString(AD->getAccessorKind());
       OS << "_for=" << AD->getStorage()->getFullName();
       printAbstractFunctionDecl(AD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitConstructorDecl(ConstructorDecl *CD) {
-      printCommonAFD(CD, "constructor_decl");
+      /*printCommonAFD(CD, "constructor_decl");
       if (CD->isRequired())
         PrintWithColorRAII(OS, DeclModifierColor) << " required";
       PrintWithColorRAII(OS, DeclModifierColor) << " "
@@ -1191,13 +1364,15 @@ namespace {
         PrintWithColorRAII(OS, DeclModifierColor) << " failable="
           << getOptionalTypeKindString(CD->getFailability());
       printAbstractFunctionDecl(CD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      visitAbstractFuncDecl(CD, OS);
     }
 
     void visitDestructorDecl(DestructorDecl *DD) {
-      printCommonAFD(DD, "destructor_decl");
+      //destructors not supported :(
+      /*printCommonAFD(DD, "destructor_decl");
       printAbstractFunctionDecl(DD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitTopLevelCodeDecl(TopLevelCodeDecl *TLCD) {
@@ -1610,12 +1785,17 @@ public:
   }
 
   void visitReturnStmt(ReturnStmt *S) {
-    printCommon(S, "return_stmt");
+    /*printCommon(S, "return_stmt");
     if (S->hasResult()) {
       OS << '\n';
       printRec(S->getResult());
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "return ";
+    if (S->hasResult()) {
+      printRec(S->getResult());
+    }
   }
 
   void visitYieldStmt(YieldStmt *S) {
@@ -1635,8 +1815,45 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
 
+  struct ConditionAndInitializerStr { std::string conditionStr; std::string initializerStr; };
+  
+  ConditionAndInitializerStr getConditionAndInitializerStr(StmtCondition conditions) {
+    
+    std::string conditionStr = "";
+    std::string initializerStr = "";
+    
+    for (auto elt : conditions) {
+      if (conditionStr.length()) conditionStr += " && ";
+      if (auto condition = elt.getBooleanOrNull()) {
+        conditionStr += "(" + dumpToStr(condition) + ")";
+      }
+      else if (auto pattern = elt.getPatternOrNull()) {
+        std::cout << "";
+        std::string initializer = dumpToStr(elt.getInitializer());
+        conditionStr += "((" + initializer + ") != null)";
+
+        std::string varName = "";
+        //no luck with pattern->getBoundName() or pattern->getSingleVar()
+        //in my example, the hierarchy was pattern_optional_some > pattern_let > pattern_named
+        //could be different though potentially, watch out
+        if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(pattern)) {
+          if(auto *letPattern = dyn_cast<VarPattern>(optionalSomePattern->getSubPattern())) {
+            if(auto *namedPattern = dyn_cast<NamedPattern>(letPattern->getSubPattern())) {
+              varName = namedPattern->getNameStr();
+            }
+          }
+        }
+        
+        initializerStr += "const " + varName + " = " + handleRAssignment(elt.getInitializer(), initializer) + " \n";
+      }
+    }
+    
+    ConditionAndInitializerStr result = { conditionStr, initializerStr };
+    return result;
+  }
+  
   void visitIfStmt(IfStmt *S) {
-    printCommon(S, "if_stmt") << '\n';
+    /*printCommon(S, "if_stmt") << '\n';
     for (auto elt : S->getCond())
       printRec(elt);
     OS << '\n';
@@ -1645,16 +1862,38 @@ public:
       OS << '\n';
       printRec(S->getElseStmt());
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
+    
+    OS << "if(" << conditionAndInitializerStr.conditionStr << ") {\n";
+    OS << conditionAndInitializerStr.initializerStr;
+    
+    printRec(S->getThenStmt());
+    
+    OS << "\n}";
+    
+    if (S->getElseStmt()) {
+      OS << "\nelse {";
+      printRec(S->getElseStmt());
+      OS << "\n}";
+    }
   }
 
   void visitGuardStmt(GuardStmt *S) {
-    printCommon(S, "guard_stmt") << '\n';
+    /*printCommon(S, "guard_stmt") << '\n';
     for (auto elt : S->getCond())
       printRec(elt);
     OS << '\n';
     printRec(S->getBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
+    
+    OS << "if(!(" << conditionAndInitializerStr.conditionStr << ")) {\n";
+    printRec(S->getBody());
+    OS << "}\n";
+    OS << conditionAndInitializerStr.initializerStr;
   }
 
   void visitDoStmt(DoStmt *S) {
@@ -1755,8 +1994,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitFailStmt(FailStmt *S) {
-    printCommon(S, "fail_stmt");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(S, "fail_stmt");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "return (this.$failed = true)";
   }
 
   void visitThrowStmt(ThrowStmt *S) {
@@ -2027,6 +2267,7 @@ public:
     
     std::string string;
     std::string memberIdentifier = getMemberIdentifier(E->getDeclRef());
+    //OS << "/*" << memberIdentifier << "*/";
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
     }
@@ -2034,13 +2275,22 @@ public:
       string = getName(E->getDeclRef().getDecl());
     }
     
+    bool isSelf = false;
     bool isInOut = false;
-    auto decl = E->getDecl();
-    if (auto *var = dyn_cast<VarDecl>(decl)) {
+    if (auto *var = dyn_cast<VarDecl>(E->getDecl())) {
+      isSelf = var->isSelfParameter();
       isInOut = var->isInOut();
     }
-    if(isInOut) {
-      if(isAssignmentExpr == E) {
+    if(isSelf) {
+      if(lAssignmentExpr == E) {
+        string = "Object.assign(this, #ASS)";
+      }
+      else {
+        string = "this";
+      }
+    }
+    else if(isInOut) {
+      if(lAssignmentExpr == E) {
         string += ".set(#ASS)";
       }
       else {
@@ -2051,8 +2301,9 @@ public:
     OS << string;
   }
   void visitSuperRefExpr(SuperRefExpr *E) {
-    printCommon(E, "super_ref_expr");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(E, "super_ref_expr");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "super";
   }
 
   void visitTypeExpr(TypeExpr *E) {
@@ -2066,15 +2317,16 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     if (E->getTypeRepr()) {
-      E->getTypeRepr()->print(OS);
+      OS << getType(GetTypeOfExpr(E));
     }
   }
 
   void visitOtherConstructorDeclRefExpr(OtherConstructorDeclRefExpr *E) {
-    printCommon(E, "other_constructor_ref_expr");
+    /*printCommon(E, "other_constructor_ref_expr");
     PrintWithColorRAII(OS, DeclColor) << " decl=";
     printDeclRef(E->getDeclRef());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << getName(E->getDeclRef().getDecl());
   }
   void visitOverloadedDeclRefExpr(OverloadedDeclRefExpr *E) {
     printCommon(E, "overloaded_decl_ref_expr");
@@ -2126,6 +2378,7 @@ public:
     
     std::string rString;
     std::string memberIdentifier = getMemberIdentifier(E->getMember());
+    //OS << "/*" << memberIdentifier << "*/";
     if(REPLACEMENTS.count(memberIdentifier)) {
       rString = REPLACEMENTS.at(memberIdentifier);
     }
@@ -2253,7 +2506,7 @@ public:
     
     std::string string;
     std::string memberIdentifier = getMemberIdentifier(E->getDecl());
-    if(isAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
+    if(lAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
       string = REPLACEMENTS.at(memberIdentifier + "#ASS");
     }
     else if(REPLACEMENTS.count(memberIdentifier)) {
@@ -2261,7 +2514,7 @@ public:
     }
     else {
       string = "#L.subscript$";
-      if(isAssignmentExpr == E) {
+      if(lAssignmentExpr == E) {
         string += "set(#AA, #ASS)";
       }
       else {
@@ -2269,7 +2522,7 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("#L"), dumpToStr(skipInOutExpr(E->getBase())));
+    string = std::regex_replace(string, std::regex("#L"), dumpToStr(E->getBase()));
     
     string = std::regex_replace(string, std::regex("#AA"), dumpToStr(E->getIndex()));
     
@@ -2363,9 +2616,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitCovariantReturnConversionExpr(CovariantReturnConversionExpr *E){
-    printCommon(E, "covariant_return_conversion_expr") << '\n';
+    /*printCommon(E, "covariant_return_conversion_expr") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitImplicitlyUnwrappedFunctionConversionExpr(
       ImplicitlyUnwrappedFunctionConversionExpr *E) {
@@ -2433,9 +2686,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitDerivedToBaseExpr(DerivedToBaseExpr *E) {
-    printCommon(E, "derived_to_base_expr") << '\n';
+    /*printCommon(E, "derived_to_base_expr") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitArchetypeToSuperExpr(ArchetypeToSuperExpr *E) {
     printCommon(E, "archetype_to_super_expr") << '\n';
@@ -2502,16 +2755,12 @@ public:
     
     std::string getStr = dumpToStr(E->getSubExpr());
     
-    bool isOptionalWrapper = false;
-    if (auto *subExpr = dyn_cast<BindOptionalExpr>(E->getSubExpr())) {
-      isOptionalWrapper = true;
-    }
-    
-    if(isOptionalWrapper) {
+    if(E->isImplicit()) {
+      //for now, I didn't encounter any case in which we had to print an implicit inout expression
       OS << getStr;
     }
     else {
-      std::string setStr = handleAssignment(E->getSubExpr(), "$val");
+      std::string setStr = handleLAssignment(E->getSubExpr(), handleRAssignment(E->getSubExpr(), "$val"));
       
       OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
     }
@@ -2654,28 +2903,50 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     if (auto rTuple = dyn_cast<TupleExpr>(rExpr)) {
-      if (auto intExpr = dyn_cast<IntegerLiteralExpr>(rTuple->getElement(0))) {
-        return printRec(intExpr);
-      }
-      if (auto floatExpr = dyn_cast<FloatLiteralExpr>(rTuple->getElement(0))) {
-        return printRec(floatExpr);
-      }
-      if (auto boolExpr = dyn_cast<BooleanLiteralExpr>(rTuple->getElement(0))) {
-        return printRec(boolExpr);
+      if (rTuple->getNumElements() == 1) {
+        if (auto intExpr = dyn_cast<IntegerLiteralExpr>(rTuple->getElement(0))) {
+          return printRec(intExpr);
+        }
+        if (auto floatExpr = dyn_cast<FloatLiteralExpr>(rTuple->getElement(0))) {
+          return printRec(floatExpr);
+        }
+        if (auto boolExpr = dyn_cast<BooleanLiteralExpr>(rTuple->getElement(0))) {
+          return printRec(boolExpr);
+        }
       }
     }
     
-    std::string lString = dumpToStr(lExpr);
+    std::string lString;
+    
+    if (auto lConstructor = dyn_cast<ConstructorRefCallExpr>(lExpr)) {
+      lString = "new " + dumpToStr(lConstructor->getArg());
+      if (auto initDeclRef = dyn_cast<DeclRefExpr>(lConstructor->getFn())) {
+        if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDeclRef().getDecl())) {
+          defaultSuffix = "('" + getName(initDecl) + "', #AA)";
+          if (initDecl->getFailability() != OTK_None) {
+            lString = "_.failableInit(" + lString;
+            defaultSuffix += ")";
+          }
+        }
+      }
+    }
+    else {
+      lString = dumpToStr(lExpr);
+    }
     
     int special = 0;
-    //special=1 slightly bodgy way to achieve e.g. replacing String.+= with `#A0 = #A0 + #A1`
-    //we need to get rid of the inout wrapper (no {get,set} = {get,set} + #A1)
-    //and invoke handleAssignment to handle cases when #A0 is e.g. an inout param
-    if(lString.find("#specialbinary") != std::string::npos) {
-      lString = "#A0 " + lString.substr(0, lString.find("#specialbinary")) + " #A1";
+    //special=1 replacing binary assignment, e.g. replacing String.+=(#A0, #A1) with `#A0 = #A0 + #A1`
+    //and invoke handleLAssignment to handle cases in case #A0 is e.g. an inout param
+    //special=2 replacing regular binary, e.g. replacing Int.==(#A0, #A1) with `#A0 == #A1`
+    if(lString.find("#specialbinaryass") != std::string::npos) {
+      lString = "#A0 " + lString.substr(lString.find("#specialbinaryass") + 17/*"#specialbinaryass".length()*/) + " #A1";
       special = 1;
     }
-    
+    else if(lString.find("#specialbinary") != std::string::npos) {
+      lString = "#A0 " + lString.substr(lString.find("#specialbinary") + 14/*"#specialbinary".length()*/) + " #A1";
+      special = 2;
+    }
+
     std::string lrString;
     if(std::regex_search(lString, std::regex("#A[0-9]"))) {
       //if the replacement references specific arguments e.g. #A0 #A1
@@ -2683,11 +2954,10 @@ public:
       TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        Expr *argExpr = i == 0 && special == 1 ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(i);
-        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(argExpr));
+        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(tuple->getElement(i)));
       }
       if(special == 1) {
-        lrString = handleAssignment(skipInOutExpr(tuple->getElement(0)), lrString);
+        lrString = handleLAssignment(tuple->getElement(0), lrString);
       }
     }
     else {
@@ -2701,7 +2971,6 @@ public:
         lrString = std::regex_replace(rString, std::regex("#NOL"), "");
       }
       //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
-      //possibly change both to #NOR and #NOL if they should be omitted
       else {
         if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
         lrString = std::regex_replace(lString, std::regex(rName), rString);
@@ -2767,9 +3036,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitRebindSelfInConstructorExpr(RebindSelfInConstructorExpr *E) {
-    printCommon(E, "rebind_self_in_constructor_expr") << '\n';
+    /*printCommon(E, "rebind_self_in_constructor_expr") << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitIfExpr(IfExpr *E) {
     printCommon(E, "if_expr") << '\n';
@@ -2789,7 +3058,7 @@ public:
     
     std::string rStr = dumpToStr(E->getSrc());
     
-    OS << handleAssignment(E->getDest(), rStr);
+    OS << handleLAssignment(E->getDest(), handleRAssignment(E->getSrc(), rStr));
   }
   void visitEnumIsCaseExpr(EnumIsCaseExpr *E) {
     printCommon(E, "enum_is_case_expr") << ' ' <<
