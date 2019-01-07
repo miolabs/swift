@@ -42,11 +42,12 @@
 
 using namespace swift;
 
+//the `^` is for unwrapping inout expressions; not sure how feasible in the long run
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String.+=", "#PRENOL(#A0 + #A1)#ISASS"},
-  {"Swift.(file).Int.+=", "#PRENOL(#A0 + #A1)#ISASS"},
+  {"Swift.(file).String.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
+  {"Swift.(file).Int.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
   {"Swift.(file).Int.==", "#PRENOL(#A0 == #A1)"},
   {"Swift.(file).Int.>", "#PRENOL(#A0 > #A1)"},
   {"Swift.(file).Int.<", "#PRENOL(#A0 < #A1)"},
@@ -58,9 +59,9 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Int.-", "#PRENOL(#A0 - #A1)"},
   {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
   {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
-  {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
-  //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
-  {"Swift.(file).Dictionary.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
+  {"Swift.(file).SignedNumeric.-", "(-(#AA))#NOL"},
+  {"Swift.(file).Dictionary.subscript(_:)", "^#L.get(#AA)"},
+  {"Swift.(file).Dictionary.subscript(_:)#ASS", "^#L.setConditional(#AA, #ASS)"},
   {"Swift.(file).Optional.none", "null#NOL"},
   {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
 };
@@ -196,6 +197,13 @@ std::string getType(Type T) {
   llvm::raw_string_ostream stream(str);
   T->print(stream);
   return stream.str();
+}
+
+Expr *skipInOutExpr(Expr *E) {
+  if (auto *inOutExpr = dyn_cast<InOutExpr>(E)) {
+    return inOutExpr->getSubExpr();
+  }
+  return E;
 }
 
 struct TerminalColor {
@@ -973,6 +981,15 @@ namespace {
       printAccessors(VD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
+      std::string varPrefix = "";
+      if(!VD->getDeclContext()->isTypeContext()) {
+        OS << (VD->isLet() ? "const" : "let") << " ";
+      }
+      else {
+        if(VD->isStatic()) varPrefix += "static ";
+        if(VD->isLet()) varPrefix += "readonly ";
+      }
+
       std::string varName;
       llvm::raw_string_ostream stream(varName);
       VD->getFullName().print(stream);
@@ -993,7 +1010,7 @@ namespace {
         stream.flush();
         
         if(accessorType == "get" || accessorType == "set") {
-          getterSetterStr += "\n" + varName + "$" + accessorType + bodyStr;
+          getterSetterStr += "\n" + varPrefix + varName + "$" + accessorType + bodyStr;
         }
         else if(accessorType == "willSet") {
           willSetStr = bodyStr;
@@ -1010,10 +1027,7 @@ namespace {
         OS << getterSetterStr;
       }
       else {
-        if(!VD->getDeclContext()->isTypeContext()) {
-          OS << (VD->isLet() ? "const" : "let") << " ";
-        }
-        OS << varName;
+        OS << varPrefix << varName;
         if(willSetStr.length() || didSetStr.length()) OS << "$val";
         if (auto initializer = VD->getParentInitializer()) {
           OS << " = " << handleRAssignment(initializer, dumpToStr(initializer));
@@ -1035,8 +1049,8 @@ namespace {
           }
           
           //willSet/didSet don't allow getter or setter, so we're safe here
-          OS << "\n" << varName << "$get() { return " << internalGetVar << " }";
-          OS << "\n" << varName << "$set($newValue) {";
+          OS << "\n" << varPrefix << varName << "$get() { return " << internalGetVar << " }";
+          OS << "\n" << varPrefix << varName << "$set($newValue) {";
           if(willSetStr.length()) OS << "\nfunction $willSet" << willSetStr;
           if(didSetStr.length()) OS << "\nfunction $didSet" << didSetStr;
           OS << "\nlet $oldValue = " << internalGetVar;
@@ -1385,9 +1399,15 @@ namespace {
     
     void visitAbstractFuncDecl(AbstractFunctionDecl *FD, raw_ostream &OS, bool ignoreName = false) {
       
+      std::string functionPrefix = "";
       if(!FD->getDeclContext()->isTypeContext()) {
         OS << "function ";
       }
+      else {
+        if(FD->isStatic()) functionPrefix += "static ";
+        OS << functionPrefix;
+      }
+      
       std::string functionName = getName(FD);
       if(!ignoreName) {
         OS << functionName << " ";
@@ -1435,7 +1455,7 @@ namespace {
         while(true) {
           std::string duplicateName = getName(FD, i);
           if(duplicateName == "!NO_DUPLICATE") break;
-          OS << "\n" << duplicateName << signature;
+          OS << "\n" << functionPrefix << duplicateName << signature;
           OS << "{\nthis." << functionName << ".apply(this,arguments)\n}";
           i++;
         }
@@ -1574,33 +1594,33 @@ namespace {
     }
 
     void visitInfixOperatorDecl(InfixOperatorDecl *IOD) {
-      printCommon(IOD, "infix_operator_decl");
+      /*printCommon(IOD, "infix_operator_decl");
       OS << " " << IOD->getName();
       if (!IOD->getIdentifiers().empty()) {
         OS << "\n";
         printOperatorIdentifiers(IOD);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitPrefixOperatorDecl(PrefixOperatorDecl *POD) {
-      printCommon(POD, "prefix_operator_decl");
+      /*printCommon(POD, "prefix_operator_decl");
       OS << " " << POD->getName();
       if (!POD->getIdentifiers().empty()) {
         OS << "\n";
         printOperatorIdentifiers(POD);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitPostfixOperatorDecl(PostfixOperatorDecl *POD) {
-      printCommon(POD, "postfix_operator_decl");
+      /*printCommon(POD, "postfix_operator_decl");
       OS << " " << POD->getName();
       if (!POD->getIdentifiers().empty()) {
         OS << "\n";
         printOperatorIdentifiers(POD);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitModuleDecl(ModuleDecl *MD) {
@@ -2501,14 +2521,9 @@ public:
       }
     }
     
-    std::string lName = "#L";
-    std::string defaultPrefix = "#L.";
+    if(rString.find("#L") == std::string::npos) rString = "#L." + rString;
     
-    std::string lString = dumpToStr(E->getBase());
-    
-    if(rString.find(lName) == std::string::npos) rString = defaultPrefix + rString;
-    
-    OS << std::regex_replace(rString, std::regex(lName), lString);
+    OS << std::regex_replace(rString, std::regex("\\^?#L"), dumpToStr(rString.find("^#L") ? skipInOutExpr(E->getBase()) : E->getBase()));
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -2637,9 +2652,9 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("#L"), dumpToStr(E->getBase()));
+    string = std::regex_replace(string, std::regex("\\^?#L"), dumpToStr(string.find("^#L") ? skipInOutExpr(E->getBase()) : E->getBase()));
     
-    string = std::regex_replace(string, std::regex("#AA"), dumpToStr(E->getIndex()));
+    string = std::regex_replace(string, std::regex("\\^?#AA"), dumpToStr(string.find("^#AA") ? skipInOutExpr(E->getIndex()) : E->getIndex()));
     
     OS << string;
   }
@@ -2870,15 +2885,9 @@ public:
     
     std::string getStr = dumpToStr(E->getSubExpr());
     
-    if(E->isImplicit()) {
-      //for now, I didn't encounter any case in which we had to print an implicit inout expression
-      OS << getStr;
-    }
-    else {
-      std::string setStr = handleLAssignment(E->getSubExpr(), handleRAssignment(E->getSubExpr(), "$val"));
-      
-      OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
-    }
+    std::string setStr = handleLAssignment(E->getSubExpr(), handleRAssignment(E->getSubExpr(), "$val"));
+    
+    OS << "{get: () => " << getStr << ", set: $val => " << setStr << "}";
   }
 
   void visitVarargExpansionExpr(VarargExpansionExpr *E) {
@@ -3049,9 +3058,10 @@ public:
       lString = dumpToStr(lExpr);
     }
     
-    bool isAss = false;
+    bool isAss = false, isAssSkipInOutExpr = false;
     if(lString.find("#ISASS") != std::string::npos) {
       isAss = true;
+      isAssSkipInOutExpr = lString.find("^#A0") != std::string::npos;
       lString = std::regex_replace(lString, std::regex("#ISASS"), "");
     }
     
@@ -3066,10 +3076,10 @@ public:
       TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(tuple->getElement(i)));
+        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), dumpToStr(lrString.find("^#A" + std::to_string(i)) ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i)));
       }
       if(isAss) {
-        lrString = handleLAssignment(tuple->getElement(0), lrString);
+        lrString = handleLAssignment(isAssSkipInOutExpr ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(0), lrString);
       }
     }
     else {
@@ -3105,7 +3115,7 @@ public:
     printApplyExpr(E->getFn(), E->getArg());
   }
   void visitDotSyntaxCallExpr(DotSyntaxCallExpr *E) {
-    printApplyExpr(E->getArg(), E->getFn(), "#R", ".#R");
+    printApplyExpr(skipInOutExpr(E->getArg()), E->getFn(), "#R", ".#R");
   }
   void visitConstructorRefCallExpr(ConstructorRefCallExpr *E) {
     printApplyExpr(E->getFn(), E->getArg());
