@@ -45,19 +45,19 @@ using namespace swift;
 const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String.+=", "#specialbinaryass+"},
-  {"Swift.(file).Int.+=", "#specialbinaryass+"},
-  {"Swift.(file).Int.==", "#specialbinary=="},
-  {"Swift.(file).Int.>", "#specialbinary>"},
-  {"Swift.(file).Int.<", "#specialbinary<"},
-  {"Swift.(file).Double.+", "#specialbinary+"},
-  {"Swift.(file).Double.-", "#specialbinary-"},
-  {"Swift.(file).Double.*", "#specialbinary*"},
-  {"Swift.(file).Double./", "#specialbinary/"},
-  {"Swift.(file).Int.+", "#specialbinary+"},
-  {"Swift.(file).Int.-", "#specialbinary-"},
-  {"Swift.(file).Int.*", "#specialbinary*"},
-  {"Swift.(file).Int./", "#specialbinary/"},
+  {"Swift.(file).String.+=", "#PRENOL(#A0 + #A1)#ISASS"},
+  {"Swift.(file).Int.+=", "#PRENOL(#A0 + #A1)#ISASS"},
+  {"Swift.(file).Int.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).Int.>", "#PRENOL(#A0 > #A1)"},
+  {"Swift.(file).Int.<", "#PRENOL(#A0 < #A1)"},
+  {"Swift.(file).Double.+", "#PRENOL(#A0 + #A1)"},
+  {"Swift.(file).Double.-", "#PRENOL(#A0 - #A1)"},
+  {"Swift.(file).Double.*", "#PRENOL(#A0 * #A1)"},
+  {"Swift.(file).Double./", "#PRENOL(#A0 / #A1)"},
+  {"Swift.(file).Int.+", "#PRENOL(#A0 + #A1)"},
+  {"Swift.(file).Int.-", "#PRENOL(#A0 - #A1)"},
+  {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
+  {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
   {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
   //if((#ASS) != null) { #L.set(#AA, #ASS) } else { #L.remove(#AA) }
   {"Swift.(file).Dictionary.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
@@ -124,6 +124,16 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
 std::string getFunctionName(AbstractFunctionDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   if(!functionUniqueNames.count(uniqueIdentifier)) {
+    std::string userFacingName = D->getBaseName().userFacingName();
+    if(D->isOperator()) {
+      std::string stringifiedOp = "OP";
+      for(unsigned long i = 0; i < userFacingName.size(); i++) {
+        stringifiedOp += "_" + std::to_string(int(userFacingName[i]));
+      }
+      userFacingName = stringifiedOp;
+    }
+    functionUniqueNames[uniqueIdentifier] = userFacingName;
+
     std::string overloadIdentifier;
     //TODO can't just use current context; need to use context of base super class [e.g. initializers.swift]
     //DeclContext: Decl getAsDecl() bool isTypeContext() ClassDecl *getSelfClassDecl()
@@ -131,8 +141,7 @@ std::string getFunctionName(AbstractFunctionDecl *D) {
     printContext(stream, D->getDeclContext());
     stream.flush();
     overloadIdentifier += ".";*/
-    overloadIdentifier += D->getBaseName().userFacingName();
-    functionUniqueNames[uniqueIdentifier] = D->getBaseName().userFacingName();
+    overloadIdentifier += userFacingName;
     if(functionOverloadedCounts.count(overloadIdentifier)) {
       functionOverloadedCounts[overloadIdentifier] += 1;
       functionUniqueNames[uniqueIdentifier] += std::to_string(functionOverloadedCounts[overloadIdentifier]);
@@ -148,17 +157,26 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
     D = overriden;
   }
   auto satisfiedProtocolRequirements = D->getSatisfiedProtocolRequirements();
+  if(satisfiedProtocolRequirementI > 0 && satisfiedProtocolRequirementI >= satisfiedProtocolRequirements.size()) {
+    return "!NO_DUPLICATE";
+  }
   if(!satisfiedProtocolRequirements.empty()) {
-    if(satisfiedProtocolRequirementI >= satisfiedProtocolRequirements.size()) return "!NO_DUPLICATE";
     D = D->getSatisfiedProtocolRequirements()[satisfiedProtocolRequirementI];
   }
-  else if(satisfiedProtocolRequirementI > 0) return "!NO_DUPLICATE";
   
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
     return getFunctionName(functionDecl);
   }
   
   return D->getBaseName().userFacingName();
+}
+
+bool checkIsGetSet(VarDecl *D) {
+  for (auto accessor : D->getAllAccessors()) {
+    //swift autogenerates getter/setters for regular vars; no need to display them
+    if(!accessor->isImplicit()) return true;
+  }
+  return false;
 }
 
 std::string getType(Type T) {
@@ -975,7 +993,7 @@ namespace {
         stream.flush();
         
         if(accessorType == "get" || accessorType == "set") {
-          getterSetterStr += "\n" + accessorType + " " + varName + bodyStr;
+          getterSetterStr += "\n" + varName + "$" + accessorType + bodyStr;
         }
         else if(accessorType == "willSet") {
           willSetStr = bodyStr;
@@ -1002,14 +1020,28 @@ namespace {
         }
         
         if(willSetStr.length() || didSetStr.length()) {
-          //willSet/didSet don't allow getter or setter, so we're safe
-          OS << "\nget " << varName << "() { return this." << varName << "$val }";
-          OS << "\nset " << varName << "($newValue) {";
+          std::string internalGetVar = "this." + varName + "$val";
+          std::string internalSetVar = "this." + varName + "$val = $newValue";
+          if (auto *overriden = VD->getOverriddenDecl()) {
+            bool isGetSet = checkIsGetSet(overriden);
+            if(!isGetSet) {
+              internalGetVar = "this." + varName;
+              internalSetVar = "this." + varName + " = $newValue";
+            }
+            else {
+              internalGetVar = "super." + varName + "$get()";
+              internalSetVar = "super." + varName + "$set($newValue)";
+            }
+          }
+          
+          //willSet/didSet don't allow getter or setter, so we're safe here
+          OS << "\n" << varName << "$get() { return " << internalGetVar << " }";
+          OS << "\n" << varName << "$set($newValue) {";
           if(willSetStr.length()) OS << "\nfunction $willSet" << willSetStr;
           if(didSetStr.length()) OS << "\nfunction $didSet" << didSetStr;
-          OS << "\nlet $oldValue = this." << varName << "$val";
+          OS << "\nlet $oldValue = " << internalGetVar;
           if(willSetStr.length()) OS << "\n$willSet.call(this, $newValue)";
-          OS << "\nthis." << varName << "$val = $newValue";
+          OS << "\n" << internalSetVar;
           if(didSetStr.length()) OS << "\n$didSet.call(this, $oldValue)";
           OS << "\n}";
         }
@@ -1180,10 +1212,18 @@ namespace {
     }
     
     void visitSubscriptDecl(SubscriptDecl *SD) {
-      printCommon(SD, "subscript_decl");
+      /*printCommon(SD, "subscript_decl");
       printStorageImpl(SD);
       printAccessors(SD);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      for (auto accessor : SD->getAllAccessors()) {
+        //swift generates implicit `_modify` accessors, not sure what that's about
+        if(accessor->isImplicit()) continue;
+        std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+        
+        OS << "\nsubscript$" << accessorType;
+        visitAbstractFuncDecl(accessor, OS, true);
+      }
     }
 
     void printCommonAFD(AbstractFunctionDecl *D, const char *Type) {
@@ -2329,13 +2369,13 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = getMemberIdentifier(E->getDeclRef().getDecl());
+    std::string memberIdentifier = getMemberIdentifier(E->getDecl());
     //OS << "/*" << memberIdentifier << "*/";
     if(REPLACEMENTS.count(memberIdentifier)) {
       string = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      string = getName(E->getDeclRef().getDecl());
+      string = getName(E->getDecl());
     }
     
     bool isSelf = false;
@@ -2389,7 +2429,7 @@ public:
     PrintWithColorRAII(OS, DeclColor) << " decl=";
     printDeclRef(E->getDeclRef());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    OS << getName(E->getDeclRef().getDecl());
+    OS << getName(E->getDecl());
   }
   void visitOverloadedDeclRefExpr(OverloadedDeclRefExpr *E) {
     printCommon(E, "overloaded_decl_ref_expr");
@@ -2447,6 +2487,18 @@ public:
     }
     else {
       rString = getName(E->getMember().getDecl());
+      bool isGetSet = false;
+      if(auto *VD = dyn_cast<VarDecl>(E->getMember().getDecl())) {
+        isGetSet = checkIsGetSet(VD);
+      }
+      if(isGetSet) {
+        if(lAssignmentExpr == E) {
+          rString += "$set(#ASS)";
+        }
+        else {
+          rString += "$get()";
+        }
+      }
     }
     
     std::string lName = "#L";
@@ -2578,7 +2630,7 @@ public:
     else {
       string = "#L.subscript$";
       if(lAssignmentExpr == E) {
-        string += "set(#AA, #ASS)";
+        string += "set(#ASS, #AA)";
       }
       else {
         string += "get(#AA)";
@@ -2984,7 +3036,7 @@ public:
     if (auto lConstructor = dyn_cast<ConstructorRefCallExpr>(lExpr)) {
       lString = "new " + dumpToStr(lConstructor->getArg());
       if (auto initDeclRef = dyn_cast<DeclRefExpr>(lConstructor->getFn())) {
-        if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDeclRef().getDecl())) {
+        if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDecl())) {
           defaultSuffix = "('" + getName(initDecl) + "', #AA)";
           if (initDecl->getFailability() != OTK_None) {
             lString = "_.failableInit(" + lString;
@@ -2997,19 +3049,16 @@ public:
       lString = dumpToStr(lExpr);
     }
     
-    int special = 0;
-    //special=1 replacing binary assignment, e.g. replacing String.+=(#A0, #A1) with `#A0 = #A0 + #A1`
-    //and invoke handleLAssignment to handle cases in case #A0 is e.g. an inout param
-    //special=2 replacing regular binary, e.g. replacing Int.==(#A0, #A1) with `#A0 == #A1`
-    if(lString.find("#specialbinaryass") != std::string::npos) {
-      lString = "#A0 " + lString.substr(lString.find("#specialbinaryass") + 17/*"#specialbinaryass".length()*/) + " #A1";
-      special = 1;
+    bool isAss = false;
+    if(lString.find("#ISASS") != std::string::npos) {
+      isAss = true;
+      lString = std::regex_replace(lString, std::regex("#ISASS"), "");
     }
-    else if(lString.find("#specialbinary") != std::string::npos) {
-      lString = "#A0 " + lString.substr(lString.find("#specialbinary") + 14/*"#specialbinary".length()*/) + " #A1";
-      special = 2;
+    
+    if(lString.find("#PRENOL") != std::string::npos) {
+      lString = lString.substr(lString.find("#PRENOL") + 7/*"#PRENOL".count()*/);
     }
-
+    
     std::string lrString;
     if(std::regex_search(lString, std::regex("#A[0-9]"))) {
       //if the replacement references specific arguments e.g. #A0 #A1
@@ -3019,7 +3068,7 @@ public:
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
         lrString = std::regex_replace(lrString, std::regex("#A" + std::to_string(i)), dumpToStr(tuple->getElement(i)));
       }
-      if(special == 1) {
+      if(isAss) {
         lrString = handleLAssignment(tuple->getElement(0), lrString);
       }
     }
