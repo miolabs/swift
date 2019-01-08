@@ -59,9 +59,11 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Int.-", "#PRENOL(#A0 - #A1)"},
   {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
   {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
+  {"Swift.(file).String.+", "#PRENOL(#A0 + #A1)"},
   {"Swift.(file).SignedNumeric.-", "(-(#AA))#NOL"},
   {"Swift.(file).Dictionary.subscript(_:)", "^#L.get(#AA)"},
   {"Swift.(file).Dictionary.subscript(_:)#ASS", "^#L.setConditional(#AA, #ASS)"},
+  {"Swift.(file).Dictionary.count", "#L.size"},
   {"Swift.(file).Optional.none", "null#NOL"},
   {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
 };
@@ -81,7 +83,7 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS_TYPE = {
 
 Expr *lAssignmentExpr = NULL;
 
-std::string optionalCondition = "";//TODO might need to use a stack for nested optionals
+std::string optionalCondition = "";//TODO might need to use a stack to handle nested optionals
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {};
 std::unordered_map<std::string, int> functionOverloadedCounts = {};
@@ -115,6 +117,12 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
         isInitializer = true;
       }
     }
+    else if (auto *dictionaryExpr = dyn_cast<DictionaryExpr>(rExpr)) {
+      isInitializer = true;
+    }
+    else if (auto *arrayExpr = dyn_cast<ArrayExpr>(rExpr)) {
+      isInitializer = true;
+    }
     if(!isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl))) {
       baseStr = "_.cloneStruct(" + baseStr + ")";
     }
@@ -122,7 +130,7 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
   return baseStr;
 }
 
-std::string getFunctionName(AbstractFunctionDecl *D) {
+std::string getFunctionName(ValueDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   if(!functionUniqueNames.count(uniqueIdentifier)) {
     std::string userFacingName = D->getBaseName().userFacingName();
@@ -167,6 +175,9 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
     return getFunctionName(functionDecl);
+  }
+  if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
+    return getFunctionName(subscriptDecl);
   }
   
   return D->getBaseName().userFacingName();
@@ -990,10 +1001,7 @@ namespace {
         if(VD->isLet()) varPrefix += "readonly ";
       }
 
-      std::string varName;
-      llvm::raw_string_ostream stream(varName);
-      VD->getFullName().print(stream);
-      stream.flush();
+      std::string varName = getName(VD);
       
       std::string getterSetterStr = "";
       std::string willSetStr = "";
@@ -1002,12 +1010,9 @@ namespace {
       for (auto accessor : VD->getAllAccessors()) {
         //swift autogenerates getter/setters for regular vars; no need to display them
         if(accessor->isImplicit()) continue;
-        std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
 
-        std::string bodyStr;
-        llvm::raw_string_ostream stream(bodyStr);
-        visitAbstractFuncDecl(accessor, stream, true);
-        stream.flush();
+        std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+        std::string bodyStr = printFuncSignature(accessor) + printFuncBody(accessor);
         
         if(accessorType == "get" || accessorType == "set") {
           getterSetterStr += "\n" + varPrefix + varName + "$" + accessorType + bodyStr;
@@ -1060,6 +1065,7 @@ namespace {
           OS << "\n}";
         }
       }
+      OS << ";";
     }
 
     void printStorageImpl(AbstractStorageDecl *D) {
@@ -1235,8 +1241,7 @@ namespace {
         if(accessor->isImplicit()) continue;
         std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
         
-        OS << "\nsubscript$" << accessorType;
-        visitAbstractFuncDecl(accessor, OS, true);
+        OS << printAbstractFunc(accessor, SD, "$" + accessorType);
       }
     }
 
@@ -1397,22 +1402,8 @@ namespace {
         OS << " type";
     }
     
-    void visitAbstractFuncDecl(AbstractFunctionDecl *FD, raw_ostream &OS, bool ignoreName = false) {
+    std::string printFuncSignature(AbstractFunctionDecl *FD) {
       
-      std::string functionPrefix = "";
-      if(!FD->getDeclContext()->isTypeContext()) {
-        OS << "function ";
-      }
-      else {
-        if(FD->isStatic()) functionPrefix += "static ";
-        OS << functionPrefix;
-      }
-      
-      std::string functionName = getName(FD);
-      if(!ignoreName) {
-        OS << functionName << " ";
-      }
-
       std::string signature = "";
       std::string genericStr;
       llvm::raw_string_ostream genericStream(genericStr);
@@ -1420,9 +1411,8 @@ namespace {
       signature += genericStream.str();
       signature += "(";
       
-      auto params = FD->getParameters();
       bool first = true;
-      for (auto P : *params) {
+      for (auto P : *FD->getParameters()) {
         if(first) first = false;
         else signature += ", ";
         std::string parameterStr;
@@ -1432,41 +1422,75 @@ namespace {
       }
       signature += ")";
       
-      OS << signature;
+      return signature;
+    }
+    
+    std::string printFuncBody(AbstractFunctionDecl *FD) {
+      
+      std::string body = "";
       
       if (FD -> isMemberwiseInitializer()) {
-        OS << "{";
-        for (auto P : *params) {
-          OS << '\n';
+        body += "{";
+        for (auto P : *FD->getParameters()) {
+          body += '\n';
           //TODO this should be using handleLAssignment
           //but not sure how to get member_ref_expr (self.`P->getFullName()`)
-          OS << "this." << P->getFullName() << " = " << P->getFullName();
+          body += "this." + getName(P) + " = " + getName(P);
         }
-        OS << "\n}";
+        body += "\n}";
       }
       else if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
-        OS << "{\n";
-        printRec(Body, FD->getASTContext(), OS);
-        OS << "\n}";
+        std::string bodyStr;
+        llvm::raw_string_ostream bodyStream(bodyStr);
+        printRec(Body, FD->getASTContext(), bodyStream);
+        body += "{\n";
+        body += bodyStream.str();
+        body += "\n}";
       }
       
-      if(FD->getDeclContext()->isTypeContext() && !ignoreName) {
-        unsigned long i = 1;
-        while(true) {
-          std::string duplicateName = getName(FD, i);
-          if(duplicateName == "!NO_DUPLICATE") break;
-          OS << "\n" << functionPrefix << duplicateName << signature;
-          OS << "{\nthis." << functionName << ".apply(this,arguments)\n}";
-          i++;
-        }
+      return body;
+    }
+    
+    std::string printAbstractFunc(AbstractFunctionDecl *FD, ValueDecl *NameD = nullptr, std::string suffix = "") {
+      
+      if(!NameD) NameD = FD;
+      std::string str = "";
+      
+      std::string functionPrefix = "";
+      if(!FD->getDeclContext()->isTypeContext()) {
+        functionPrefix += "function ";
       }
+      else {
+        if(FD->isStatic()) functionPrefix += "static ";
+      }
+      str += functionPrefix;
+      
+      std::string functionName = getName(NameD) + suffix;
+      str += functionName;
+      
+      std::string signature = printFuncSignature(FD);
+      str += signature;
+
+      str += printFuncBody(FD);
+      
+      unsigned long i = 1;
+      while(true) {
+        std::string duplicateName = getName(NameD, i);
+        if(duplicateName == "!NO_DUPLICATE") break;
+        str += "\n" + functionPrefix + duplicateName + suffix + signature;
+        str += "{\nthis." + functionName + ".apply(this,arguments)\n}";
+        i++;
+      }
+      
+      return str;
     }
 
     void visitFuncDecl(FuncDecl *FD) {
       /*printCommonFD(FD, "func_decl");
       printAbstractFunctionDecl(FD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAbstractFuncDecl(FD, OS);
+      OS << printAbstractFunc(FD);
+      
     }
 
     void visitAccessorDecl(AccessorDecl *AD) {
@@ -1488,7 +1512,7 @@ namespace {
           << getOptionalTypeKindString(CD->getFailability());
       printAbstractFunctionDecl(CD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAbstractFuncDecl(CD, OS);
+      OS << printAbstractFunc(CD);
     }
 
     void visitDestructorDecl(DestructorDecl *DD) {
@@ -1503,6 +1527,7 @@ namespace {
       if (TLCD->getBody()) {
         OS << "\n";
         printRec(TLCD->getBody(), static_cast<Decl *>(TLCD)->getASTContext());
+        OS << ";";
       }
       /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
@@ -2523,7 +2548,7 @@ public:
     
     if(rString.find("#L") == std::string::npos) rString = "#L." + rString;
     
-    OS << std::regex_replace(rString, std::regex("\\^?#L"), dumpToStr(rString.find("^#L") ? skipInOutExpr(E->getBase()) : E->getBase()));
+    OS << std::regex_replace(rString, std::regex("\\^?#L"), dumpToStr(skipInOutExpr(E->getBase())));
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -2643,7 +2668,7 @@ public:
       string = REPLACEMENTS.at(memberIdentifier);
     }
     else {
-      string = "#L.subscript$";
+      string = "#L." + getName(E->getMember().getDecl()) + "$";
       if(lAssignmentExpr == E) {
         string += "set(#ASS, #AA)";
       }
@@ -2652,9 +2677,9 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("\\^?#L"), dumpToStr(string.find("^#L") ? skipInOutExpr(E->getBase()) : E->getBase()));
+    string = std::regex_replace(string, std::regex("\\^?#L"), dumpToStr(string.find("^#L") != std::string::npos ? skipInOutExpr(E->getBase()) : E->getBase()));
     
-    string = std::regex_replace(string, std::regex("\\^?#AA"), dumpToStr(string.find("^#AA") ? skipInOutExpr(E->getIndex()) : E->getIndex()));
+    string = std::regex_replace(string, std::regex("\\^?#AA"), dumpToStr(string.find("^#AA") != std::string::npos ? skipInOutExpr(E->getIndex()) : E->getIndex()));
     
     OS << string;
   }
@@ -3076,7 +3101,7 @@ public:
       TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), dumpToStr(lrString.find("^#A" + std::to_string(i)) ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i)));
+        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), dumpToStr(lrString.find("^#A" + std::to_string(i)) != std::string::npos ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i)));
       }
       if(isAss) {
         lrString = handleLAssignment(isAssSkipInOutExpr ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(0), lrString);
@@ -3163,13 +3188,20 @@ public:
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitIfExpr(IfExpr *E) {
-    printCommon(E, "if_expr") << '\n';
+    /*printCommon(E, "if_expr") << '\n';
     printRec(E->getCondExpr());
     OS << '\n';
     printRec(E->getThenExpr());
     OS << '\n';
     printRec(E->getElseExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "(";
+    printRec(E->getCondExpr());
+    OS << " ? ";
+    printRec(E->getThenExpr());
+    OS << " : ";
+    printRec(E->getElseExpr());
+    OS << ")";
   }
   void visitAssignExpr(AssignExpr *E) {
     /*printCommon(E, "assign_expr") << '\n';
