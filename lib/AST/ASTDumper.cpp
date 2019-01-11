@@ -18,6 +18,7 @@
 #include <regex>
 #include <unordered_map>
 #include <iostream>
+#include <vector>
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
@@ -59,13 +60,35 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Int.-", "#PRENOL(#A0 - #A1)"},
   {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
   {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
+  {"Swift.(file).Int.%", "#PRENOL(#A0 % #A1)"},
   {"Swift.(file).String.+", "#PRENOL(#A0 + #A1)"},
   {"Swift.(file).SignedNumeric.-", "(-(#AA))#NOL"},
-  {"Swift.(file).Dictionary.subscript(_:)", "^#L.get(#AA)"},
-  {"Swift.(file).Dictionary.subscript(_:)#ASS", "^#L.setConditional(#AA, #ASS)"},
+  {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
+  {"Swift.(file).Dictionary.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
   {"Swift.(file).Dictionary.count", "#L.size"},
+  {"Swift.(file).Array.subscript(_:)", "#L[#AA]"},
+  {"Swift.(file).Array.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
+  {"Swift.(file).Array.count", "#L.length"},
+  {"Swift.(file).Array.+", "#PRENOL#A0.concat(#A1)"},
+  {"Swift.(file).Array.+=", "#PRENOL^#A0.pushMany(#A1)"},
+  {"Swift.(file).Array.append", "#L.push(#AA)"},
+  {"Swift.(file).Array.append(contentsOf:)", "#L.pushMany(#AA)"},
+  {"Swift.(file).Array.insert(_:at:)", "#L.splice(#A1, 0, #A0)"},
+  {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:at:)", "#L.pushManyAt(#AA)"},
+  {"Swift.(file).Array.remove(at:)", "#L.splice(#AA, 1)"},
+  {"Swift.(file).Array.init()", "new Array()"},
+  {"Swift.(file).Array.init(repeating:count:)", "new Array(#A1).fill(#A0)"},
+  {"Swift.(file).ArrayProtocol.filter", "#L.filter(#AA)"},
+  {"Swift.(file).Sequence.reduce", "#L.reduce(#A1, #A0)"},
+  {"Swift.(file).MutableCollection.sort(by:)", "#L.sortBool(#AA)"},
+  {"Swift.(file).Collection.map", "#L.map(#AA)"},
+  {"Swift.(file).Set.insert", "#L.add(#AA)"},
+  {"Swift.(file).Set.count", "#L.size"},
+  {"Swift.(file).Set.init()", "new Set()"},
+  {"Swift.(file).Comparable....", "#PRENOLnew ClosedRange(#A0, #A1)"},
+  {"Swift.(file).Comparable...<", "#PRENOLnew Range(#A0, #A1)"},
   {"Swift.(file).Optional.none", "null#NOL"},
-  {"Swift.(file).??", "((#A0) != null ? (#A0) : (#A1))"}
+  {"Swift.(file).??", "_.nilCoalescing(#A0, #A1)"}
 };
 const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Int", false},
@@ -81,12 +104,17 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS_TYPE = {
   {"Swift.(file).Dictionary", "Map"}
 };
 
-Expr *lAssignmentExpr = NULL;
+Expr *lAssignmentExpr;
+Expr *functionArgsCall;
 
 std::string optionalCondition = "";//TODO might need to use a stack to handle nested optionals
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {};
 std::unordered_map<std::string, int> functionOverloadedCounts = {};
+
+std::string regex_escape(std::string replacement) {
+  return std::regex_replace(replacement, std::regex("\\$"), "$$$$");
+}
 
 std::string dumpToStr(Expr *E) {
   std::string str;
@@ -107,7 +135,7 @@ std::string handleLAssignment(Expr *lExpr, std::string rExpr) {
   if(setStr.find("#ASS") == std::string::npos) {
     setStr += " = #ASS";
   }
-  return std::regex_replace(setStr, std::regex("#ASS"), rExpr);
+  return std::regex_replace(setStr, std::regex("#ASS"), regex_escape(rExpr));
 }
 std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
   if (auto *structDecl = rExpr->getType()->getStructOrBoundGenericStruct()) {
@@ -185,7 +213,7 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
 
 bool checkIsGetSet(VarDecl *D) {
   for (auto accessor : D->getAllAccessors()) {
-    //swift autogenerates getter/setters for regular vars; no need to display them
+    //swift autogenerates getters/setters for regular vars; no need to display them
     if(!accessor->isImplicit()) return true;
   }
   return false;
@@ -215,6 +243,21 @@ Expr *skipInOutExpr(Expr *E) {
     return inOutExpr->getSubExpr();
   }
   return E;
+}
+Expr *skipTupleShuffleExpr(Expr *E) {
+  if (auto *tupleShuffleExpr = dyn_cast<TupleShuffleExpr>(E)) {
+    return tupleShuffleExpr->getSubExpr();
+  }
+  return E;
+}
+
+unsigned tempValI = 0;
+struct TempValInfo { std::string name; std::string expr; };
+TempValInfo getTempVal(std::string init) {
+  std::string name = "_.tmp" + std::to_string(tempValI);
+  std::string expr = "(" + name + " = (" + init + "))";
+  tempValI++;
+  return TempValInfo{name, expr};
 }
 
 struct TerminalColor {
@@ -991,81 +1034,6 @@ namespace {
       printStorageImpl(VD);
       printAccessors(VD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      
-      std::string varPrefix = "";
-      if(!VD->getDeclContext()->isTypeContext()) {
-        OS << (VD->isLet() ? "const" : "let") << " ";
-      }
-      else {
-        if(VD->isStatic()) varPrefix += "static ";
-        if(VD->isLet()) varPrefix += "readonly ";
-      }
-
-      std::string varName = getName(VD);
-      
-      std::string getterSetterStr = "";
-      std::string willSetStr = "";
-      std::string didSetStr = "";
-
-      for (auto accessor : VD->getAllAccessors()) {
-        //swift autogenerates getter/setters for regular vars; no need to display them
-        if(accessor->isImplicit()) continue;
-
-        std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
-        std::string bodyStr = printFuncSignature(accessor) + printFuncBody(accessor);
-        
-        if(accessorType == "get" || accessorType == "set") {
-          getterSetterStr += "\n" + varPrefix + varName + "$" + accessorType + bodyStr;
-        }
-        else if(accessorType == "willSet") {
-          willSetStr = bodyStr;
-        }
-        else if(accessorType == "didSet") {
-          didSetStr = bodyStr;
-        }
-        else {
-          llvm_unreachable((accessorType + " accessor not supported").c_str());
-        }
-      }
-      
-      if(getterSetterStr.length()) {
-        OS << getterSetterStr;
-      }
-      else {
-        OS << varPrefix << varName;
-        if(willSetStr.length() || didSetStr.length()) OS << "$val";
-        if (auto initializer = VD->getParentInitializer()) {
-          OS << " = " << handleRAssignment(initializer, dumpToStr(initializer));
-        }
-        
-        if(willSetStr.length() || didSetStr.length()) {
-          std::string internalGetVar = "this." + varName + "$val";
-          std::string internalSetVar = "this." + varName + "$val = $newValue";
-          if (auto *overriden = VD->getOverriddenDecl()) {
-            bool isGetSet = checkIsGetSet(overriden);
-            if(!isGetSet) {
-              internalGetVar = "this." + varName;
-              internalSetVar = "this." + varName + " = $newValue";
-            }
-            else {
-              internalGetVar = "super." + varName + "$get()";
-              internalSetVar = "super." + varName + "$set($newValue)";
-            }
-          }
-          
-          //willSet/didSet don't allow getter or setter, so we're safe here
-          OS << "\n" << varPrefix << varName << "$get() { return " << internalGetVar << " }";
-          OS << "\n" << varPrefix << varName << "$set($newValue) {";
-          if(willSetStr.length()) OS << "\nfunction $willSet" << willSetStr;
-          if(didSetStr.length()) OS << "\nfunction $didSet" << didSetStr;
-          OS << "\nlet $oldValue = " << internalGetVar;
-          if(willSetStr.length()) OS << "\n$willSet.call(this, $newValue)";
-          OS << "\n" << internalSetVar;
-          if(didSetStr.length()) OS << "\n$didSet.call(this, $oldValue)";
-          OS << "\n}";
-        }
-      }
-      OS << ";";
     }
 
     void printStorageImpl(AbstractStorageDecl *D) {
@@ -1216,6 +1184,63 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       visitAnyStructDecl(CD, "class");
     }
+    
+    struct PatternBindingInfo {
+      std::string varPrefix;
+      std::vector<std::string> varNames;
+      std::string varNameStr;
+      std::unordered_map<std::string, std::string> accessorBodies;
+      bool isTuple;
+    };
+    PatternBindingInfo getPatternBindingInfo(Pattern *P) {
+      
+      unsigned i = 0;
+      std::string varPrefix = "";
+      std::vector<std::string> varNames;
+      std::string varNameStr;
+      std::unordered_map<std::string, std::string> accessorBodies;
+      
+      bool isTuple = false;
+      if(auto *tuplePattern = dyn_cast<TuplePattern>(P)) isTuple = true;
+      P->forEachVariable([&](const VarDecl *VD) {
+        if(!i) {
+          if(!VD->getDeclContext()->isTypeContext()) {
+            varPrefix += VD->isLet() ? "const " : "let ";
+          }
+          else {
+            if(VD->isStatic()) varPrefix += "static ";
+            if(VD->isLet()) varPrefix += "readonly ";
+          }
+        }
+        else {
+          varNameStr += ", ";
+        }
+        
+        if(isTuple) {
+          varNameStr += std::to_string(i) + ": ";
+        }
+        varNames.push_back(VD->getNameStr());
+        varNameStr += VD->getNameStr();
+        
+        if(!VD->getDeclContext()->getSelfProtocolDecl()) {
+          for (auto accessor : VD->getAllAccessors()) {
+            //swift autogenerates getter/setters for regular vars; no need to display them
+            if(accessor->isImplicit()) continue;
+            
+            std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+            std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams()) + printFuncBody(accessor);
+            
+            accessorBodies[accessorType] = bodyStr;
+          }
+        }
+        
+        i++;
+      });
+      
+      if(isTuple) varNameStr = "{" + varNameStr + "}";
+      
+      return PatternBindingInfo{ varPrefix, varNames, varNameStr, accessorBodies, isTuple };
+    }
 
     void visitPatternBindingDecl(PatternBindingDecl *PBD) {
       /*printCommon(PBD, "pattern_binding_decl");
@@ -1229,6 +1254,54 @@ namespace {
         }
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      for (auto entry : PBD->getPatternList()) {
+        
+        auto info = getPatternBindingInfo(entry.getPattern());
+        
+        if(info.accessorBodies.count("get")) {
+          OS << info.varPrefix << info.varNameStr << "$get" << info.accessorBodies["get"];
+          if(info.accessorBodies.count("set")) {
+            OS << info.varPrefix << info.varNameStr << "$set" << info.accessorBodies["set"];
+          }
+        }
+        else {
+          OS << info.varPrefix << info.varNameStr;
+          if(info.accessorBodies.count("willSet") || info.accessorBodies.count("didSet")) {
+            OS << "$val";
+          }
+          if(entry.getInit()) {
+            OS << " = (" << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit())) << ")";
+            if(info.isTuple) OS << " || {}";
+          }
+          if(info.accessorBodies.count("willSet") || info.accessorBodies.count("didSet")) {
+            std::string internalGetVar = "this." + info.varNameStr + "$val";
+            std::string internalSetVar = "this." + info.varNameStr + "$val = $newValue";
+            if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
+              bool isGetSet = checkIsGetSet(overriden);
+              if(!isGetSet) {
+                internalGetVar = "this." + info.varNameStr;
+                internalSetVar = "this." + info.varNameStr + " = $newValue";
+              }
+              else {
+                internalGetVar = "super." + info.varNameStr + "$get()";
+                internalSetVar = "super." + info.varNameStr + "$set($newValue)";
+              }
+            }
+            
+            //willSet/didSet don't allow getter or setter, so we're safe here
+            OS << "\n" << info.varPrefix << info.varNameStr << "$get() { return " << internalGetVar << " }";
+            OS << "\n" << info.varPrefix << info.varNameStr << "$set($newValue) {";
+            if(info.accessorBodies.count("willSet")) OS << "\nfunction $willSet" << info.accessorBodies["willSet"];
+            if(info.accessorBodies.count("didSet")) OS << "\nfunction $didSet" << info.accessorBodies["didSet"];
+            OS << "\nlet $oldValue = " << internalGetVar;
+            if(info.accessorBodies.count("willSet")) OS << "\n$willSet.call(this, $newValue)";
+            OS << "\n" << internalSetVar;
+            if(info.accessorBodies.count("didSet")) OS << "\n$didSet.call(this, $oldValue)";
+            OS << "\n}";
+          }
+        }
+      }
     }
     
     void visitSubscriptDecl(SubscriptDecl *SD) {
@@ -1337,7 +1410,7 @@ namespace {
       
       if (auto init = P->getDefaultValue()) {
         OS << " = ";
-        printRec(init);
+        init->dump(OS);
       }
     }
 
@@ -1402,26 +1475,28 @@ namespace {
         OS << " type";
     }
     
-    std::string printFuncSignature(AbstractFunctionDecl *FD) {
+    std::string printFuncSignature(ParameterList *params, GenericParamList *genericParams) {
       
       std::string signature = "";
       std::string genericStr;
       llvm::raw_string_ostream genericStream(genericStr);
-      printGenericParameters(genericStream, FD->getGenericParams());
+      printGenericParameters(genericStream, genericParams);
       signature += genericStream.str();
+
       signature += "(";
-      
-      bool first = true;
-      for (auto P : *FD->getParameters()) {
-        if(first) first = false;
-        else signature += ", ";
-        std::string parameterStr;
-        llvm::raw_string_ostream parameterStream(parameterStr);
-        printParameter(P, parameterStream);
-        signature += parameterStream.str();
+      if(params) {
+        bool first = true;
+        for (auto P : *params) {
+          if(first) first = false;
+          else signature += ", ";
+          std::string parameterStr;
+          llvm::raw_string_ostream parameterStream(parameterStr);
+          printParameter(P, parameterStream);
+          signature += parameterStream.str();
+        }
       }
       signature += ")";
-      
+
       return signature;
     }
     
@@ -1468,7 +1543,7 @@ namespace {
       std::string functionName = getName(NameD) + suffix;
       str += functionName;
       
-      std::string signature = printFuncSignature(FD);
+      std::string signature = printFuncSignature(FD->getParameters(), FD->getGenericParams());
       str += signature;
 
       str += printFuncBody(FD);
@@ -1527,7 +1602,6 @@ namespace {
       if (TLCD->getBody()) {
         OS << "\n";
         printRec(TLCD->getBody(), static_cast<Decl *>(TLCD)->getASTContext());
-        OS << ";";
       }
       /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
@@ -1929,6 +2003,7 @@ public:
         printRec(SubStmt);
       else
         printRec(Elt.get<Decl*>());
+      OS << ";";
     }
   }
 
@@ -1965,39 +2040,45 @@ public:
 
   struct ConditionAndInitializerStr { std::string conditionStr; std::string initializerStr; };
   
+  ConditionAndInitializerStr getIfLet(Pattern *P, Expr *initExpr) {
+    std::string conditionStr = "";
+    std::string initializerStr = "";
+    
+    auto info = PrintDecl(OS).getPatternBindingInfo(P);
+    initializerStr += info.varPrefix + info.varNameStr;
+    initializerStr += " = (" + handleRAssignment(initExpr, dumpToStr(initExpr)) + ")";
+    if(info.isTuple) initializerStr += " || {}";
+    
+    for(auto varName: info.varNames) {
+      if (conditionStr.length()) conditionStr += " && ";
+      conditionStr += "(" + varName + " != null)";
+    }
+    
+    return ConditionAndInitializerStr{ conditionStr, initializerStr };
+  }
+  
   ConditionAndInitializerStr getConditionAndInitializerStr(StmtCondition conditions) {
     
     std::string conditionStr = "";
     std::string initializerStr = "";
     
     for (auto elt : conditions) {
-      if (conditionStr.length()) conditionStr += " && ";
       if (auto condition = elt.getBooleanOrNull()) {
+        if (conditionStr.length()) conditionStr += " && ";
         conditionStr += "(" + dumpToStr(condition) + ")";
       }
       else if (auto pattern = elt.getPatternOrNull()) {
-        std::cout << "";
-        std::string initializer = dumpToStr(elt.getInitializer());
-        conditionStr += "((" + initializer + ") != null)";
-
-        std::string varName = "";
-        //no luck with pattern->getBoundName() or pattern->getSingleVar()
-        //in my example, the hierarchy was pattern_optional_some > pattern_let > pattern_named
-        //could be different though potentially, watch out
         if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(pattern)) {
-          if(auto *letPattern = dyn_cast<VarPattern>(optionalSomePattern->getSubPattern())) {
-            if(auto *namedPattern = dyn_cast<NamedPattern>(letPattern->getSubPattern())) {
-              varName = namedPattern->getNameStr();
-            }
+          if(auto *varPattern = dyn_cast<VarPattern>(optionalSomePattern->getSubPattern())) {
+            auto ifLet = getIfLet(varPattern->getSubPattern(), elt.getInitializer());
+            conditionStr += ifLet.conditionStr;
+            initializerStr += ifLet.initializerStr;
           }
         }
-        
-        initializerStr += "const " + varName + " = " + handleRAssignment(elt.getInitializer(), initializer) + " \n";
       }
     }
     
-    ConditionAndInitializerStr result = { conditionStr, initializerStr };
-    return result;
+    return ConditionAndInitializerStr{ conditionStr, initializerStr };
   }
   
   void visitIfStmt(IfStmt *S) {
@@ -2014,8 +2095,10 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
-    OS << "if(" << conditionAndInitializerStr.conditionStr << ") {\n";
+    //TODO the initializer ideally would be inside the `if` body so that we keep vars within scope
+    //but that would require _.tmp within ifs
     OS << conditionAndInitializerStr.initializerStr;
+    OS << "if(" << conditionAndInitializerStr.conditionStr << ") {\n";
     
     printRec(S->getThenStmt());
     
@@ -2038,10 +2121,10 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
+    OS << conditionAndInitializerStr.initializerStr;
     OS << "if(!(" << conditionAndInitializerStr.conditionStr << ")) {\n";
     printRec(S->getBody());
     OS << "}\n";
-    OS << conditionAndInitializerStr.initializerStr;
   }
 
   void visitDoStmt(DoStmt *S) {
@@ -2067,7 +2150,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitForEachStmt(ForEachStmt *S) {
-    printCommon(S, "for_each_stmt") << '\n';
+    /*printCommon(S, "for_each_stmt") << '\n';
     printRec(S->getPattern());
     OS << '\n';
     if (S->getWhere()) {
@@ -2090,15 +2173,36 @@ public:
       OS << '\n';
     }
     printRec(S->getBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    if(S->getIterator()) {
+      printRec(S->getIterator());
+    }
+    
+    OS << "\nwhile(true) {\n";
+    
+    auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext());
+    
+    OS << ifLet.initializerStr;
+    OS << ";\nif(!(" + ifLet.conditionStr + ")) break;\n";
+
+    if(S->getWhere()) {
+      OS << "\nif(!(" << dumpToStr(S->getWhere()) << ")) break;";
+    }
+    
+    printRec(S->getBody());
+    
+    OS << "\n}";
   }
   void visitBreakStmt(BreakStmt *S) {
-    printCommon(S, "break_stmt");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(S, "break_stmt");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "break";
   }
   void visitContinueStmt(ContinueStmt *S) {
-    printCommon(S, "continue_stmt");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(S, "continue_stmt");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "continue";
   }
   void visitFallthroughStmt(FallthroughStmt *S) {
     printCommon(S, "fallthrough_stmt");
@@ -2548,7 +2652,7 @@ public:
     
     if(rString.find("#L") == std::string::npos) rString = "#L." + rString;
     
-    OS << std::regex_replace(rString, std::regex("\\^?#L"), dumpToStr(skipInOutExpr(E->getBase())));
+    OS << std::regex_replace(rString, std::regex("\\^?#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -2607,19 +2711,42 @@ public:
     }
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
+    bool wrap = !E->isImplicit() && E != functionArgsCall;
+    
+    if (wrap) OS << "{";
     for (unsigned i = 0, e = E->getNumElements(); i != e; ++i) {
       if (i) OS << ", ";
+      if (wrap) {
+        OS << std::to_string(i) << ": ";
+      }
       OS << dumpToStr(E->getElement(i));
     }
+    if (wrap) OS << "}";
   }
   void visitArrayExpr(ArrayExpr *E) {
-    printCommon(E, "array_expr");
+    /*printCommon(E, "array_expr");
     for (auto elt : E->getElements()) {
       OS << '\n';
       printRec(elt);
     }
     printSemanticExpr(E->getSemanticExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    bool isSet = false;
+    if(auto *nominalDecl = GetTypeOfExpr(E)->getNominalOrBoundGenericNominal()) {
+      isSet = getMemberIdentifier(nominalDecl) == "Swift.(file).Set";
+    }
+    
+    if(isSet) OS << "new Set(";
+    OS << "[";
+    bool first = true;
+    for (auto elt : E->getElements()) {
+      if(first) first = false;
+      else OS << ", ";
+      printRec(elt);
+    }
+    OS << "]";
+    if(isSet) OS << ")";
   }
   void visitDictionaryExpr(DictionaryExpr *E) {
     /*printCommon(E, "dictionary_expr");
@@ -2677,9 +2804,10 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("\\^?#L"), dumpToStr(string.find("^#L") != std::string::npos ? skipInOutExpr(E->getBase()) : E->getBase()));
+    string = std::regex_replace(string, std::regex("\\^?#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
     
-    string = std::regex_replace(string, std::regex("\\^?#AA"), dumpToStr(string.find("^#AA") != std::string::npos ? skipInOutExpr(E->getIndex()) : E->getIndex()));
+    functionArgsCall = skipTupleShuffleExpr(E->getIndex());
+    string = std::regex_replace(string, std::regex("\\^?#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
     
     OS << string;
   }
@@ -2714,10 +2842,14 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitTupleElementExpr(TupleElementExpr *E) {
-    printCommon(E, "tuple_element_expr")
+    /*printCommon(E, "tuple_element_expr")
       << " field #" << E->getFieldNumber() << '\n';
     printRec(E->getBase());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    printRec(E->getBase());
+    
+    OS << "[\"" << std::to_string(E->getFieldNumber()) << "\"]";
   }
   void visitTupleShuffleExpr(TupleShuffleExpr *E) {
     /*printCommon(E, "tuple_shuffle_expr");
@@ -2761,9 +2893,21 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitFunctionConversionExpr(FunctionConversionExpr *E) {
-    printCommon(E, "function_conversion_expr") << '\n';
+    /*printCommon(E, "function_conversion_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string string = dumpToStr(E->getSubExpr());
+    if(auto *dotSyntaxCallExpr = dyn_cast<DotSyntaxCallExpr>(E->getSubExpr())) {
+      if(auto *declref_expr = dyn_cast<DotSyntaxCallExpr>(dotSyntaxCallExpr->getFn())) {
+        //an operator closure
+        string = string.substr(string.find("#PRENOL") + 7/*"#PRENOL".count()*/);
+        string = std::regex_replace(string, std::regex("\\^?#A0"), "a");
+        string = std::regex_replace(string, std::regex("\\^?#A1"), "b");
+        string = "(a, b) => " + string;
+      }
+    }
+    OS << string;
   }
   void visitCovariantFunctionConversionExpr(CovariantFunctionConversionExpr *E){
     printCommon(E, "covariant_function_conversion_expr") << '\n';
@@ -2982,7 +3126,7 @@ public:
   }
 
   void visitClosureExpr(ClosureExpr *E) {
-    printClosure(E, "closure_expr");
+    /*printClosure(E, "closure_expr");
     if (E->hasSingleExpressionBody())
       PrintWithColorRAII(OS, ClosureModifierColor) << " single-expression";
 
@@ -2997,7 +3141,19 @@ public:
     } else {
       printRec(E->getBody(), E->getASTContext());
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "(";
+    OS << PrintDecl(OS).printFuncSignature(E->getParameters(), nullptr);
+    OS << " => ";
+    if (E->hasSingleExpressionBody()) {
+      printRec(E->getSingleExpressionBody());
+    } else {
+      OS << "{ ";
+      printRec(E->getBody(), E->getASTContext());
+      OS << " }";
+    }
+    OS << ")";
   }
   void visitAutoClosureExpr(AutoClosureExpr *E) {
     /*printClosure(E, "autoclosure_expr") << '\n';
@@ -3071,10 +3227,17 @@ public:
       lString = "new " + dumpToStr(lConstructor->getArg());
       if (auto initDeclRef = dyn_cast<DeclRefExpr>(lConstructor->getFn())) {
         if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDecl())) {
-          defaultSuffix = "('" + getName(initDecl) + "', #AA)";
-          if (initDecl->getFailability() != OTK_None) {
-            lString = "_.failableInit(" + lString;
-            defaultSuffix += ")";
+          std::string memberIdentifier = getMemberIdentifier(initDecl);
+          if(REPLACEMENTS.count(memberIdentifier)) {
+            lString = REPLACEMENTS.at(memberIdentifier);
+            defaultSuffix = "";
+          }
+          else {
+            defaultSuffix = "('" + getName(initDecl) + "', #AA)";
+            if (initDecl->getFailability() != OTK_None) {
+              lString = "_.failableInit(" + lString;
+              defaultSuffix += ")";
+            }
           }
         }
       }
@@ -3101,18 +3264,20 @@ public:
       TupleExpr *tuple = (TupleExpr*)rExpr;
       lrString = lString;
       for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), dumpToStr(lrString.find("^#A" + std::to_string(i)) != std::string::npos ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i)));
+        std::string replacement = dumpToStr(lrString.find("^#A" + std::to_string(i)) != std::string::npos ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i));
+        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), regex_escape(replacement));
       }
       if(isAss) {
         lrString = handleLAssignment(isAssSkipInOutExpr ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(0), lrString);
       }
     }
     else {
+      functionArgsCall = skipTupleShuffleExpr(rExpr);
       std::string rString = dumpToStr(rExpr);
       //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
       //we replace the #L with left-hand side there
       if(rString.find("#L") != std::string::npos) {
-        lrString = std::regex_replace(rString, std::regex("#L"), lString);
+        lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
       }
       else if(rString.find("#NOL") != std::string::npos) {
         lrString = std::regex_replace(rString, std::regex("#NOL"), "");
@@ -3120,7 +3285,7 @@ public:
       //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
       else {
         if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
-        lrString = std::regex_replace(lString, std::regex(rName), rString);
+        lrString = std::regex_replace(lString, std::regex(rName), regex_escape(rString));
       }
     }
     
@@ -3231,12 +3396,12 @@ public:
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string expr = dumpToStr(E->getSubExpr());
-    std::string condition = "((" + expr + ") != null)";
+    auto tempVal = getTempVal(dumpToStr(E->getSubExpr()));
+    std::string condition = "(" + tempVal.expr + " != null)";
     
     optionalCondition = optionalCondition.length() ? optionalCondition + " && " + condition : condition;
     
-    OS << expr;
+    OS << tempVal.name;
   }
   void visitOptionalEvaluationExpr(OptionalEvaluationExpr *E) {
     /*printCommon(E, "optional_evaluation_expr") << '\n';
