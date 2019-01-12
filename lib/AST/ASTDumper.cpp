@@ -48,10 +48,31 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).String.count", "#L.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
   {"Swift.(file).String.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
-  {"Swift.(file).Int.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
   {"Swift.(file).Int.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).Int.!=", "#PRENOL(#A0 != #A1)"},
+  {"Swift.(file).BinaryInteger.!=", "#PRENOL(#A0 != #A1)"},
   {"Swift.(file).Int.>", "#PRENOL(#A0 > #A1)"},
   {"Swift.(file).Int.<", "#PRENOL(#A0 < #A1)"},
+  {"Swift.(file).Int.>=", "#PRENOL(#A0 >= #A1)"},
+  {"Swift.(file).Int.<=", "#PRENOL(#A0 <= #A1)"},
+  {"Swift.(file).String.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).String.!=", "#PRENOL(#A0 != #A1)"},
+  {"Swift.(file).String.>", "#PRENOL(#A0 > #A1)"},
+  {"Swift.(file).String.<", "#PRENOL(#A0 < #A1)"},
+  {"Swift.(file).String.>=", "#PRENOL(#A0 >= #A1)"},
+  {"Swift.(file).String.<=", "#PRENOL(#A0 <= #A1)"},
+  {"Swift.(file).Character.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).Character.!=", "#PRENOL(#A0 != #A1)"},
+  {"Swift.(file).Character.>", "#PRENOL(#A0 > #A1)"},
+  {"Swift.(file).Character.<", "#PRENOL(#A0 < #A1)"},
+  {"Swift.(file).Character.>=", "#PRENOL(#A0 >= #A1)"},
+  {"Swift.(file).Character.<=", "#PRENOL(#A0 <= #A1)"},
+  {"Swift.(file).FloatingPoint.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).Equatable.!=", "#PRENOL(#A0 != #A1)"},
+  {"Swift.(file).FloatingPoint.>", "#PRENOL(#A0 > #A1)"},
+  {"Swift.(file).FloatingPoint.<", "#PRENOL(#A0 < #A1)"},
+  {"Swift.(file).FloatingPoint.>=", "#PRENOL(#A0 >= #A1)"},
+  {"Swift.(file).FloatingPoint.<=", "#PRENOL(#A0 <= #A1)"},
   {"Swift.(file).Double.+", "#PRENOL(#A0 + #A1)"},
   {"Swift.(file).Double.-", "#PRENOL(#A0 - #A1)"},
   {"Swift.(file).Double.*", "#PRENOL(#A0 * #A1)"},
@@ -61,6 +82,11 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
   {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
   {"Swift.(file).Int.%", "#PRENOL(#A0 % #A1)"},
+  {"Swift.(file).Int.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
+  {"Swift.(file).Int.-=", "#PRENOL(^#A0 - #A1)#ISASS"},
+  {"Swift.(file).Int.*=", "#PRENOL(^#A0 * #A1)#ISASS"},
+  {"Swift.(file).Int./=", "#PRENOL((^#A0 / #A1) | 0)#ISASS"},
+  {"Swift.(file).Int.%=", "#PRENOL(^#A0 % #A1)#ISASS"},
   {"Swift.(file).String.+", "#PRENOL(#A0 + #A1)"},
   {"Swift.(file).SignedNumeric.-", "(-(#AA))#NOL"},
   {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
@@ -76,6 +102,7 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Array.insert(_:at:)", "#L.splice(#A1, 0, #A0)"},
   {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:at:)", "#L.pushManyAt(#AA)"},
   {"Swift.(file).Array.remove(at:)", "#L.splice(#AA, 1)"},
+  {"Swift.(file).BidirectionalCollection.joined(separator:)", "#L.join(#AA)"},
   {"Swift.(file).Array.init()", "new Array()"},
   {"Swift.(file).Array.init(repeating:count:)", "new Array(#A1).fill(#A0)"},
   {"Swift.(file).ArrayProtocol.filter", "#L.filter(#AA)"},
@@ -88,7 +115,13 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Comparable....", "#PRENOLnew ClosedRange(#A0, #A1)"},
   {"Swift.(file).Comparable...<", "#PRENOLnew Range(#A0, #A1)"},
   {"Swift.(file).Optional.none", "null#NOL"},
-  {"Swift.(file).??", "_.nilCoalescing(#A0, #A1)"}
+  {"Swift.(file).??", "_.nilCoalescing(#A0, #A1)"},
+  {"Swift.(file).Bool.!", "(!(#AA))#NOL"},
+  {"Swift.(file).Bool.||", "#PRENOL(#A0 || #A1)"},
+  {"Swift.(file).Bool.&&", "#PRENOL(#A0 && #A1)"},
+  {"Swift.(file).Bool.==", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).Bool.!=", "#PRENOL(#A0 != #A1)"},
+  {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"}
 };
 const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Int", false},
@@ -129,8 +162,21 @@ std::string getMemberIdentifier(ValueDecl *D) {
   return stream.str();
 }
 
+Expr *skipWrapperExpressions(Expr *E) {
+  while (true) {
+    if(auto *tupleShuffleExpr = dyn_cast<TupleShuffleExpr>(E)) {
+      E = tupleShuffleExpr->getSubExpr();
+    }
+    else if(auto *openExistentialExpr = dyn_cast<OpenExistentialExpr>(E)) {
+      E = openExistentialExpr->getSubExpr();
+    }
+    else break;
+  }
+  return E;
+}
+
 std::string handleLAssignment(Expr *lExpr, std::string rExpr) {
-  lAssignmentExpr = lExpr;
+  lAssignmentExpr = skipWrapperExpressions(lExpr);
   std::string setStr = dumpToStr(lExpr);
   if(setStr.find("#ASS") == std::string::npos) {
     setStr += " = #ASS";
@@ -160,8 +206,9 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
 
 std::string getFunctionName(ValueDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
+  std::string userFacingName = D->getBaseName().userFacingName();
+  if(uniqueIdentifier.find("Swift.(file).") == 0) return userFacingName;
   if(!functionUniqueNames.count(uniqueIdentifier)) {
-    std::string userFacingName = D->getBaseName().userFacingName();
     if(D->isOperator()) {
       std::string stringifiedOp = "OP";
       for(unsigned long i = 0; i < userFacingName.size(); i++) {
@@ -244,21 +291,17 @@ Expr *skipInOutExpr(Expr *E) {
   }
   return E;
 }
-Expr *skipTupleShuffleExpr(Expr *E) {
-  if (auto *tupleShuffleExpr = dyn_cast<TupleShuffleExpr>(E)) {
-    return tupleShuffleExpr->getSubExpr();
-  }
-  return E;
-}
 
 unsigned tempValI = 0;
 struct TempValInfo { std::string name; std::string expr; };
-TempValInfo getTempVal(std::string init) {
+TempValInfo getTempVal(std::string init = "") {
   std::string name = "_.tmp" + std::to_string(tempValI);
   std::string expr = "(" + name + " = (" + init + "))";
   tempValI++;
   return TempValInfo{name, expr};
 }
+
+std::unordered_map<OpaqueValueExpr*, Expr*> opaqueValueReplacements;
 
 struct TerminalColor {
   llvm::raw_ostream::Colors Color;
@@ -2046,7 +2089,8 @@ public:
     
     auto info = PrintDecl(OS).getPatternBindingInfo(P);
     initializerStr += info.varPrefix + info.varNameStr;
-    initializerStr += " = (" + handleRAssignment(initExpr, dumpToStr(initExpr)) + ")";
+    if(initializerStr.length()) initializerStr += " = ";
+    initializerStr += "(" + handleRAssignment(initExpr, dumpToStr(initExpr)) + ")";
     if(info.isTuple) initializerStr += " || {}";
     
     for(auto varName: info.varNames) {
@@ -2071,6 +2115,7 @@ public:
         if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(pattern)) {
           if(auto *varPattern = dyn_cast<VarPattern>(optionalSomePattern->getSubPattern())) {
             auto ifLet = getIfLet(varPattern->getSubPattern(), elt.getInitializer());
+            if (conditionStr.length()) conditionStr += " && ";
             conditionStr += ifLet.conditionStr;
             initializerStr += ifLet.initializerStr;
           }
@@ -2134,20 +2179,32 @@ public:
   }
 
   void visitWhileStmt(WhileStmt *S) {
-    printCommon(S, "while_stmt") << '\n';
+    /*printCommon(S, "while_stmt") << '\n';
     for (auto elt : S->getCond())
       printRec(elt);
     OS << '\n';
     printRec(S->getBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
+    
+    OS << "while(" << conditionAndInitializerStr.conditionStr << ") {\n";
+    printRec(S->getBody());
+    OS << "\n}";
   }
 
   void visitRepeatWhileStmt(RepeatWhileStmt *S) {
-    printCommon(S, "repeat_while_stmt") << '\n';
+    /*printCommon(S, "repeat_while_stmt") << '\n';
     printRec(S->getBody());
     OS << '\n';
     printRec(S->getCond());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::string conditionStr = dumpToStr(S->getCond());
+    
+    OS << "do {\n";
+    printRec(S->getBody());
+    OS << "\n} while(" << conditionStr << ")";
   }
   void visitForEachStmt(ForEachStmt *S) {
     /*printCommon(S, "for_each_stmt") << '\n';
@@ -2183,8 +2240,14 @@ public:
     
     auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext());
     
-    OS << ifLet.initializerStr;
-    OS << ";\nif(!(" + ifLet.conditionStr + ")) break;\n";
+    if(!ifLet.conditionStr.length()) {
+      //when using '_' in the for loop
+      OS << ";\nif(" << ifLet.initializerStr << " == null) break;\n";
+    }
+    else {
+      OS << ifLet.initializerStr;
+      OS << ";\nif(!(" + ifLet.conditionStr + ")) break;\n";
+    }
 
     if(S->getWhere()) {
       OS << "\nif(!(" << dumpToStr(S->getWhere()) << ")) break;";
@@ -2636,11 +2699,23 @@ public:
     }
     else {
       rString = getName(E->getMember().getDecl());
+      bool isProtocol = false;
+      bool isGeneric = false;
       bool isGetSet = false;
       if(auto *VD = dyn_cast<VarDecl>(E->getMember().getDecl())) {
+        isProtocol = VD->getDeclContext()->getSelfProtocolDecl();
+        isGeneric = VD->getDeclContext()->isGenericContext();
         isGetSet = checkIsGetSet(VD);
       }
-      if(isGetSet) {
+      if(isProtocol || isGeneric) {
+        if(lAssignmentExpr == E) {
+          rString = "_.protocolSet(#L, '" + rString + "', #ASS)";
+        }
+        else {
+          rString = "_.protocolGet(#L, '" + rString + "')";
+        }
+      }
+      else if(isGetSet) {
         if(lAssignmentExpr == E) {
           rString += "$set(#ASS)";
         }
@@ -2806,7 +2881,7 @@ public:
     
     string = std::regex_replace(string, std::regex("\\^?#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
     
-    functionArgsCall = skipTupleShuffleExpr(E->getIndex());
+    functionArgsCall = skipWrapperExpressions(E->getIndex());
     string = std::regex_replace(string, std::regex("\\^?#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
     
     OS << string;
@@ -2899,7 +2974,7 @@ public:
     
     std::string string = dumpToStr(E->getSubExpr());
     if(auto *dotSyntaxCallExpr = dyn_cast<DotSyntaxCallExpr>(E->getSubExpr())) {
-      if(auto *declref_expr = dyn_cast<DotSyntaxCallExpr>(dotSyntaxCallExpr->getFn())) {
+      if(auto *declRefExpr = dyn_cast<DeclRefExpr>(dotSyntaxCallExpr->getFn())) {
         //an operator closure
         string = string.substr(string.find("#PRENOL") + 7/*"#PRENOL".count()*/);
         string = std::regex_replace(string, std::regex("\\^?#A0"), "a");
@@ -3180,6 +3255,8 @@ public:
   void visitOpaqueValueExpr(OpaqueValueExpr *E) {
     /*printCommon(E, "opaque_value_expr") << " @ " << (void*)E;
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    printRec(opaqueValueReplacements[E]);
   }
 
   void printArgumentLabels(ArrayRef<Identifier> argLabels) {
@@ -3228,6 +3305,7 @@ public:
       if (auto initDeclRef = dyn_cast<DeclRefExpr>(lConstructor->getFn())) {
         if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDecl())) {
           std::string memberIdentifier = getMemberIdentifier(initDecl);
+          //OS << "/*" << memberIdentifier << "*/";
           if(REPLACEMENTS.count(memberIdentifier)) {
             lString = REPLACEMENTS.at(memberIdentifier);
             defaultSuffix = "";
@@ -3272,7 +3350,7 @@ public:
       }
     }
     else {
-      functionArgsCall = skipTupleShuffleExpr(rExpr);
+      functionArgsCall = skipWrapperExpressions(rExpr);
       std::string rString = dumpToStr(rExpr);
       //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
       //we replace the #L with left-hand side there
@@ -3319,14 +3397,16 @@ public:
   }
 
   void printExplicitCastExpr(ExplicitCastExpr *E, const char *name) {
-    printCommon(E, name) << ' ';
+    /*printCommon(E, name) << ' ';
     if (auto checkedCast = dyn_cast<CheckedCastExpr>(E))
       OS << getCheckedCastKindName(checkedCast->getCastKind()) << ' ';
     OS << "writtenType='";
     GetTypeOfTypeLoc(E->getCastTypeLoc()).print(OS);
     OS << "'\n";
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    printRec(E->getSubExpr());
   }
   void visitForcedCheckedCastExpr(ForcedCheckedCastExpr *E) {
     printExplicitCastExpr(E, "forced_checked_cast_expr");
@@ -3430,13 +3510,16 @@ public:
     //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitOpenExistentialExpr(OpenExistentialExpr *E) {
-    //printCommon(E, "open_existential_expr") << '\n';
+    /*printCommon(E, "open_existential_expr") << '\n';
     printRec(E->getOpaqueValue());
     OS << '\n';
     printRec(E->getExistentialValue());
     OS << '\n';
     printRec(E->getSubExpr());
-    //PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    opaqueValueReplacements[E->getOpaqueValue()] = E->getExistentialValue();
+    printRec(E->getSubExpr());
   }
   void visitMakeTemporarilyEscapableExpr(MakeTemporarilyEscapableExpr *E) {
     printCommon(E, "make_temporarily_escapable_expr") << '\n';
