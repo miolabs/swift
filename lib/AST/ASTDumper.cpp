@@ -2140,8 +2140,7 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
-    //TODO the initializer ideally would be inside the `if` body so that we keep vars within scope
-    //but that would require _.tmp within ifs
+    OS << "\n{";
     OS << conditionAndInitializerStr.initializerStr;
     OS << "if(" << conditionAndInitializerStr.conditionStr << ") {\n";
     
@@ -2154,6 +2153,7 @@ public:
       printRec(S->getElseStmt());
       OS << "\n}";
     }
+    OS << "\n}";
   }
 
   void visitGuardStmt(GuardStmt *S) {
@@ -2166,10 +2166,12 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
+    OS << "\n{";
     OS << conditionAndInitializerStr.initializerStr;
     OS << "if(!(" << conditionAndInitializerStr.conditionStr << ")) {\n";
     printRec(S->getBody());
     OS << "}\n";
+    OS << "\n}";
   }
 
   void visitDoStmt(DoStmt *S) {
@@ -2232,6 +2234,8 @@ public:
     printRec(S->getBody());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
+    OS << "\n{";
+    
     if(S->getIterator()) {
       printRec(S->getIterator());
     }
@@ -2255,6 +2259,7 @@ public:
     
     printRec(S->getBody());
     
+    OS << "\n}";
     OS << "\n}";
   }
   void visitBreakStmt(BreakStmt *S) {
