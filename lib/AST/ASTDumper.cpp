@@ -296,7 +296,7 @@ unsigned tempValI = 0;
 struct TempValInfo { std::string name; std::string expr; };
 TempValInfo getTempVal(std::string init = "") {
   std::string name = "_.tmp" + std::to_string(tempValI);
-  std::string expr = "(" + name + " = (" + init + "))";
+  std::string expr = "(" + name + " = " + init + ")";
   tempValI++;
   return TempValInfo{name, expr};
 }
@@ -1229,41 +1229,47 @@ namespace {
     }
     
     struct PatternBindingInfo {
-      std::string varPrefix;
-      std::vector<std::string> varNames;
-      std::string varNameStr;
-      std::unordered_map<std::string, std::string> accessorBodies;
-      bool isTuple;
+      std::string varPrefix = "";
+      std::vector<std::string> varNames = {};
+      std::string varNameStr = "";
+      std::unordered_map<std::string, std::string> accessorBodies = {};
+      bool isTuple = false;
     };
     PatternBindingInfo getPatternBindingInfo(Pattern *P) {
       
-      unsigned i = 0;
-      std::string varPrefix = "";
-      std::vector<std::string> varNames;
-      std::string varNameStr;
-      std::unordered_map<std::string, std::string> accessorBodies;
+      PatternBindingInfo result;
       
-      bool isTuple = false;
-      if(auto *tuplePattern = dyn_cast<TuplePattern>(P)) isTuple = true;
-      P->forEachVariable([&](const VarDecl *VD) {
-        if(!i) {
+      walkPattern(P, result);
+      
+      return result;
+    }
+    void walkPattern(Pattern *P, PatternBindingInfo &info) {
+      
+      if(auto *tuplePattern = dyn_cast<TuplePattern>(P)) {
+        info.isTuple = true;
+        info.varNameStr += "{";
+        unsigned i = 0;
+        for (auto elt : tuplePattern->getElements()) {
+          if(i) info.varNameStr += ", ";
+          info.varNameStr += std::to_string(i++) + ": ";
+          walkPattern(elt.getPattern(), info);
+        }
+        info.varNameStr += "}";
+      }
+      else if(auto *namedPattern = dyn_cast<NamedPattern>(P)) {
+        auto *VD = namedPattern->getDecl();
+        if(!info.varPrefix.length()) {
           if(!VD->getDeclContext()->isTypeContext()) {
-            varPrefix += VD->isLet() ? "const " : "let ";
+            info.varPrefix += VD->isLet() ? "const " : "let ";
           }
           else {
-            if(VD->isStatic()) varPrefix += "static ";
-            if(VD->isLet()) varPrefix += "readonly ";
+            if(VD->isStatic()) info.varPrefix += "static ";
+            if(VD->isLet()) info.varPrefix += "readonly ";
           }
         }
-        else {
-          varNameStr += ", ";
-        }
         
-        if(isTuple) {
-          varNameStr += std::to_string(i) + ": ";
-        }
-        varNames.push_back(VD->getNameStr());
-        varNameStr += VD->getNameStr();
+        info.varNames.push_back(VD->getNameStr());
+        info.varNameStr += VD->getNameStr();
         
         if(!VD->getDeclContext()->getSelfProtocolDecl()) {
           for (auto accessor : VD->getAllAccessors()) {
@@ -1273,16 +1279,28 @@ namespace {
             std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
             std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams()) + printFuncBody(accessor);
             
-            accessorBodies[accessorType] = bodyStr;
+            info.accessorBodies[accessorType] = bodyStr;
           }
         }
-        
-        i++;
-      });
-      
-      if(isTuple) varNameStr = "{" + varNameStr + "}";
-      
-      return PatternBindingInfo{ varPrefix, varNames, varNameStr, accessorBodies, isTuple };
+      }
+      else if(auto *wrapped = dyn_cast<IsPattern>(P)) {
+        walkPattern(wrapped->getSubPattern(), info);
+      }
+      else if(auto *wrapped = dyn_cast<ParenPattern>(P)) {
+        walkPattern(wrapped->getSubPattern(), info);
+      }
+      else if(auto *wrapped = dyn_cast<TypedPattern>(P)) {
+        walkPattern(wrapped->getSubPattern(), info);
+      }
+      else if(auto *wrapped = dyn_cast<VarPattern>(P)) {
+        walkPattern(wrapped->getSubPattern(), info);
+      }
+      else if(auto *wrapped = dyn_cast<EnumElementPattern>(P)) {
+        if(wrapped->hasSubPattern()) walkPattern(wrapped->getSubPattern(), info);
+      }
+      else if(auto *wrapped = dyn_cast<OptionalSomePattern>(P)) {
+        walkPattern(wrapped->getSubPattern(), info);
+      }
     }
 
     void visitPatternBindingDecl(PatternBindingDecl *PBD) {
@@ -1314,8 +1332,10 @@ namespace {
             OS << "$val";
           }
           if(entry.getInit()) {
-            OS << " = (" << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit())) << ")";
-            if(info.isTuple) OS << " || {}";
+            OS << " = ";
+            if(info.isTuple) OS << "(";
+            OS << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit()));
+            if(info.isTuple) OS << ") || {}";
           }
           if(info.accessorBodies.count("willSet") || info.accessorBodies.count("didSet")) {
             std::string internalGetVar = "this." + info.varNameStr + "$val";
@@ -2091,8 +2111,9 @@ public:
     auto info = PrintDecl(OS).getPatternBindingInfo(P);
     initializerStr += info.varPrefix + info.varNameStr;
     if(initializerStr.length()) initializerStr += " = ";
-    initializerStr += "(" + handleRAssignment(initExpr, dumpToStr(initExpr)) + ")";
-    if(info.isTuple) initializerStr += " || {}";
+    if(info.isTuple) initializerStr += "(";
+    initializerStr += handleRAssignment(initExpr, dumpToStr(initExpr));
+    if(info.isTuple) initializerStr += ") || {}";
     
     for(auto varName: info.varNames) {
       if (conditionStr.length()) conditionStr += " && ";
@@ -2113,14 +2134,10 @@ public:
         conditionStr += "(" + dumpToStr(condition) + ")";
       }
       else if (auto pattern = elt.getPatternOrNull()) {
-        if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(pattern)) {
-          if(auto *varPattern = dyn_cast<VarPattern>(optionalSomePattern->getSubPattern())) {
-            auto ifLet = getIfLet(varPattern->getSubPattern(), elt.getInitializer());
-            if (conditionStr.length()) conditionStr += " && ";
-            conditionStr += ifLet.conditionStr;
-            initializerStr += ifLet.initializerStr;
-          }
-        }
+        auto ifLet = getIfLet(pattern, elt.getInitializer());
+        if (conditionStr.length()) conditionStr += " && ";
+        conditionStr += ifLet.conditionStr;
+        initializerStr += ifLet.initializerStr;
       }
     }
     
@@ -2143,7 +2160,7 @@ public:
     
     OS << "\n{";
     OS << conditionAndInitializerStr.initializerStr;
-    OS << "if(" << conditionAndInitializerStr.conditionStr << ") {\n";
+    OS << "\nif(" << conditionAndInitializerStr.conditionStr << ") {\n";
     
     printRec(S->getThenStmt());
     
@@ -2169,9 +2186,9 @@ public:
     
     OS << "\n{";
     OS << conditionAndInitializerStr.initializerStr;
-    OS << "if(!(" << conditionAndInitializerStr.conditionStr << ")) {\n";
+    OS << "\nif(!(" << conditionAndInitializerStr.conditionStr << ")) {\n";
     printRec(S->getBody());
-    OS << "}\n";
+    OS << "\n}";
     OS << "\n}";
   }
 
