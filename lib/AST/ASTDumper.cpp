@@ -1464,6 +1464,10 @@ namespace {
       
       OS << P->getFullName();
       
+      if(P->isInOut()) {
+        OS << "$inout";
+      }
+      
       if(P->hasType()) {
         OS << ": " << getType(P->getType());
       }
@@ -1594,13 +1598,40 @@ namespace {
         llvm::raw_string_ostream bodyStream(bodyStr);
         printRec(Body, FD->getASTContext(), bodyStream);
         body += "{\n";
+        body += generateInOutPrefix(FD);
         body += bodyStream.str();
+        body += generateInOutSuffix(FD);
         body += "\n}";
       }
       
       return body;
     }
     
+    std::string generateInOutPrefix(AbstractFunctionDecl *FD) {
+      std::string result;
+      if (auto params = FD->getParameters()) {
+        for (auto P : *params) {
+          if(P->isInOut()) {
+            std::string paramName = P->getFullName().getBaseIdentifier().get();
+            result += "\nlet " + paramName + " = " + paramName + "$inout.get()";
+          }
+        }
+      }
+      return result;
+    }
+    std::string generateInOutSuffix(AbstractFunctionDecl *FD) {
+      std::string result;
+      if (auto params = FD->getParameters()) {
+        for (auto P : *params) {
+          if(P->isInOut()) {
+            std::string paramName = P->getFullName().getBaseIdentifier().get();
+            result += "\n" + paramName + "$inout.set(" + paramName + ")";
+          }
+        }
+      }
+      return result;
+    }
+
     std::string printAbstractFunc(AbstractFunctionDecl *FD, ValueDecl *NameD = nullptr, std::string suffix = "") {
       
       if(!NameD) NameD = FD;
@@ -2625,10 +2656,8 @@ public:
     }
     
     bool isSelf = false;
-    bool isInOut = false;
     if (auto *var = dyn_cast<VarDecl>(E->getDecl())) {
       isSelf = var->isSelfParameter();
-      isInOut = var->isInOut();
     }
     if(isSelf) {
       if(lAssignmentExpr == E) {
@@ -2636,14 +2665,6 @@ public:
       }
       else {
         string = "this";
-      }
-    }
-    else if(isInOut) {
-      if(lAssignmentExpr == E) {
-        string += ".set(#ASS)";
-      }
-      else {
-        string += ".get()";
       }
     }
     
