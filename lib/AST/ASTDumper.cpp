@@ -1198,8 +1198,8 @@ namespace {
           if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
             OS << "\n";
             if (first) first = false;
-            else OS << "\n else";
-            OS << "if(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
+            else OS << "\nelse ";
+            OS << "if(signature === '" << getName(constructor) << "') this." << getName(constructor) << ".apply(this, params)";
           }
         }
         OS << "\nthis.$initialized = true";
