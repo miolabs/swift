@@ -1572,9 +1572,20 @@ namespace {
         body += "{";
         for (auto P : *FD->getParameters()) {
           body += '\n';
-          //TODO this should be using handleLAssignment
-          //but not sure how to get member_ref_expr (self.`P->getFullName()`)
-          body += "this." + getName(P) + " = " + getName(P);
+          
+          //manually creating member_ref_expr (self.`P->getFullName()`)
+          //so that we can then use it in handleLAssignment
+          VarDecl *storedVar = dyn_cast<VarDecl>(FD->getDeclContext()->getSelfStructDecl()->lookupDirect(P->getFullName())[0]);
+          ASTContext &C = FD->getASTContext();
+          auto *selfDecl = FD->getImplicitSelfDecl();
+          auto selfRef = new (C) DeclRefExpr(selfDecl, DeclNameLoc(), /*implicit*/true);
+          selfRef->setType(selfDecl->getType());
+          auto storedRef = new (C) MemberRefExpr(selfRef, SourceLoc(), storedVar,
+                                                 DeclNameLoc(), /*Implicit=*/true,
+                                                 AccessSemantics::DirectToStorage);
+          storedRef->setType(storedVar->getInterfaceType());
+          
+          body += handleLAssignment(storedRef, getName(P));
         }
         body += "\n}";
       }
