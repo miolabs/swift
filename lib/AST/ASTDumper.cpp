@@ -1193,11 +1193,16 @@ namespace {
         if(wasClass) {
           OS << "\nsuper(null)";
         }
+        bool first = true;
         for (Decl *subD : D->getMembers()) {
           if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
-            OS << "\nif(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
+            OS << "\n";
+            if (first) first = false;
+            else OS << "\n else";
+            OS << "if(signature === '" << getName(constructor) << "') return this." << getName(constructor) << ".apply(this, params)";
           }
         }
+        OS << "\nthis.$initialized = true";
         OS << "\n}";
       }
 
@@ -1358,9 +1363,9 @@ namespace {
             if(info.accessorBodies.count("willSet")) OS << "\nfunction $willSet" << info.accessorBodies["willSet"];
             if(info.accessorBodies.count("didSet")) OS << "\nfunction $didSet" << info.accessorBodies["didSet"];
             OS << "\nlet $oldValue = " << internalGetVar;
-            if(info.accessorBodies.count("willSet")) OS << "\n$willSet.call(this, $newValue)";
+            if(info.accessorBodies.count("willSet")) OS << "\nif(this.$initialized) $willSet.call(this, $newValue)";
             OS << "\n" << internalSetVar;
-            if(info.accessorBodies.count("didSet")) OS << "\n$didSet.call(this, $oldValue)";
+            if(info.accessorBodies.count("didSet")) OS << "\nif(this.$initialized) $didSet.call(this, $oldValue)";
             OS << "\n}";
           }
         }
