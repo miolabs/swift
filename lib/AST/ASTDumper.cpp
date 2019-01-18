@@ -258,14 +258,6 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   return D->getBaseName().userFacingName();
 }
 
-bool checkIsGetSet(VarDecl *D) {
-  for (auto accessor : D->getAllAccessors()) {
-    //swift autogenerates getters/setters for regular vars; no need to display them
-    if(!accessor->isImplicit()) return true;
-  }
-  return false;
-}
-
 std::string getType(Type T) {
   if(auto *metatypeType = dyn_cast<AnyMetatypeType>(T.getPointer())) {
     //that's to display e.g. `Double` instead of `Double.Type` when referring to the class itself
@@ -1239,6 +1231,8 @@ namespace {
       std::string varNameStr = "";
       std::unordered_map<std::string, std::string> accessorBodies = {};
       bool isTuple = false;
+      bool isTypeContext = false;
+      bool isProtocol = false;
     };
     PatternBindingInfo getPatternBindingInfo(Pattern *P) {
       
@@ -1268,6 +1262,8 @@ namespace {
             info.varPrefix += VD->isLet() ? "const " : "let ";
           }
           else {
+            info.isTypeContext = true;
+            info.isProtocol = VD->getDeclContext()->getSelfProtocolDecl();
             if(VD->isStatic()) info.varPrefix += "static ";
             if(VD->isLet()) info.varPrefix += "readonly ";
           }
@@ -1325,16 +1321,17 @@ namespace {
         
         auto info = getPatternBindingInfo(entry.getPattern());
         
-        if(info.accessorBodies.count("get")) {
-          OS << info.varPrefix << info.varNameStr << "$get" << info.accessorBodies["get"];
-          if(info.accessorBodies.count("set")) {
-            OS << info.varPrefix << info.varNameStr << "$set" << info.accessorBodies["set"];
+        bool isOverriden = false;
+        if (info.isTypeContext) {
+          if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
+            isOverriden = true;
           }
         }
-        else {
-          OS << info.varPrefix << info.varNameStr;
-          if(info.accessorBodies.count("willSet") || info.accessorBodies.count("didSet")) {
-            OS << "$val";
+        
+        if(!isOverriden || entry.getInit()) {
+          OS << "\n" << info.varPrefix << info.varNameStr;
+          if(info.isTypeContext && !info.isProtocol) {
+            OS << "$internal";
           }
           if(entry.getInit()) {
             OS << " = ";
@@ -1342,33 +1339,44 @@ namespace {
             OS << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit()));
             if(info.isTuple) OS << ") || {}";
           }
-          if(info.accessorBodies.count("willSet") || info.accessorBodies.count("didSet")) {
-            std::string internalGetVar = "this." + info.varNameStr + "$val";
-            std::string internalSetVar = "this." + info.varNameStr + "$val = $newValue";
-            if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
-              bool isGetSet = checkIsGetSet(overriden);
-              if(!isGetSet) {
-                internalGetVar = "this." + info.varNameStr;
-                internalSetVar = "this." + info.varNameStr + " = $newValue";
-              }
-              else {
-                internalGetVar = "super." + info.varNameStr + "$get()";
-                internalSetVar = "super." + info.varNameStr + "$set($newValue)";
-              }
+        }
+        
+        if(info.isTypeContext && !info.isProtocol) {
+          std::string internalGetVar = "this." + info.varNameStr + "$internal";
+          std::string internalSetVar = "this." + info.varNameStr + "$internal = $newValue";
+          if(isOverriden) {
+            internalGetVar = "super." + info.varNameStr + "$get()";
+            internalSetVar = "super." + info.varNameStr + "$set($newValue)";
+          }
+          
+          OS << "\n" << info.varPrefix << info.varNameStr << "$get";
+          if(info.accessorBodies.count("get")) {
+            OS << info.accessorBodies["get"];
+          }
+          else {
+            OS << "() { return " << internalGetVar << " }";
+          }
+          OS << "\n" << info.varPrefix << "get " << info.varNameStr << "() { return this." << info.varNameStr << "$get() }";
+
+          if(info.accessorBodies.count("set") || !info.accessorBodies.count("get")) {
+            OS << "\n" << info.varPrefix << info.varNameStr << "$set";
+            if(info.accessorBodies.count("set")) {
+              OS << info.accessorBodies["set"];
             }
-            
-            //willSet/didSet don't allow getter or setter, so we're safe here
-            OS << "\n" << info.varPrefix << info.varNameStr << "$get() { return " << internalGetVar << " }";
-            OS << "\n" << info.varPrefix << info.varNameStr << "$set($newValue) {";
-            if(info.accessorBodies.count("willSet")) OS << "\nfunction $willSet" << info.accessorBodies["willSet"];
-            if(info.accessorBodies.count("didSet")) OS << "\nfunction $didSet" << info.accessorBodies["didSet"];
-            OS << "\nlet $oldValue = " << internalGetVar;
-            if(info.accessorBodies.count("willSet")) OS << "\nif(this.$initialized) $willSet.call(this, $newValue)";
-            OS << "\n" << internalSetVar;
-            if(info.accessorBodies.count("didSet")) OS << "\nif(this.$initialized) $didSet.call(this, $oldValue)";
-            OS << "\n}";
+            else {
+              OS << "($newValue) {";
+              if(info.accessorBodies.count("willSet")) OS << "\nfunction $willSet" << info.accessorBodies["willSet"];
+              if(info.accessorBodies.count("didSet")) OS << "\nfunction $didSet" << info.accessorBodies["didSet"];
+              OS << "\nlet $oldValue = " << internalGetVar;
+              if(info.accessorBodies.count("willSet")) OS << "\nif(this.$initialized) $willSet.call(this, $newValue)";
+              OS << "\n" << internalSetVar;
+              if(info.accessorBodies.count("didSet")) OS << "\nif(this.$initialized) $didSet.call(this, $oldValue)";
+              OS << "\n}";
+            }
+            OS << "\n" << info.varPrefix << "set " << info.varNameStr << "($newValue) { this." << info.varNameStr << "$set($newValue) }\n";
           }
         }
+        
         OS << ";\n";
       }
     }
@@ -2759,23 +2767,11 @@ public:
     }
     else {
       rString = getName(E->getMember().getDecl());
-      bool isProtocol = false;
-      bool isGeneric = false;
-      bool isGetSet = false;
-      if(auto *VD = dyn_cast<VarDecl>(E->getMember().getDecl())) {
-        isProtocol = VD->getDeclContext()->getSelfProtocolDecl();
-        isGeneric = VD->getDeclContext()->isGenericContext();
-        isGetSet = checkIsGetSet(VD);
+      bool isSuper = false;
+      if(auto *superRefExpr = dyn_cast<SuperRefExpr>(skipInOutExpr(E->getBase()))) {
+        isSuper = true;
       }
-      if(isProtocol || isGeneric) {
-        if(lAssignmentExpr == E) {
-          rString = "_.protocolSet(#L, '" + rString + "', #ASS)";
-        }
-        else {
-          rString = "_.protocolGet(#L, '" + rString + "')";
-        }
-      }
-      else if(isGetSet) {
+      if(isSuper) {
         if(lAssignmentExpr == E) {
           rString += "$set(#ASS)";
         }
