@@ -140,7 +140,7 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS_TYPE = {
 Expr *lAssignmentExpr;
 Expr *functionArgsCall;
 
-std::string optionalCondition = "";//TODO might need to use a stack to handle nested optionals
+std::vector<std::string> optionalCondition = {};
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {};
 std::unordered_map<std::string, int> functionOverloadedCounts = {};
@@ -3537,7 +3537,7 @@ public:
     auto tempVal = getTempVal(dumpToStr(E->getSubExpr()));
     std::string condition = "(" + tempVal.expr + " != null)";
     
-    optionalCondition = optionalCondition.length() ? optionalCondition + " && " + condition : condition;
+    optionalCondition[optionalCondition.size() - 1] = optionalCondition.back().length() ? optionalCondition.back() + " && " + condition : condition;
     
     OS << tempVal.name;
   }
@@ -3546,7 +3546,7 @@ public:
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    optionalCondition = "";
+    optionalCondition.push_back("");
     std::string expr = dumpToStr(E->getSubExpr());
     
     /*bool isAssign = false;
@@ -3559,8 +3559,9 @@ public:
       OS << "if(" << optionalCondition << ") {" << expr << "}";
     }
     else {*/
-      OS << "((" << optionalCondition << ") ? (" << expr << ") : null)";
+      OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : null)";
     /*}*/
+    optionalCondition.pop_back();
   }
   void visitForceValueExpr(ForceValueExpr *E) {
     //printCommon(E, "force_value_expr") << '\n';
