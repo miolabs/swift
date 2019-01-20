@@ -1630,6 +1630,7 @@ namespace {
           }
         }
       }
+      if(result.length()) result += "const $result = (() => {";
       return result;
     }
     std::string generateInOutSuffix(AbstractFunctionDecl *FD) {
@@ -1642,6 +1643,7 @@ namespace {
           }
         }
       }
+      if(result.length()) result = "})()" + result + "\nreturn result";
       return result;
     }
 
