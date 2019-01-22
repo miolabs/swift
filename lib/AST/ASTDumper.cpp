@@ -184,7 +184,11 @@ std::string handleLAssignment(Expr *lExpr, std::string rExpr) {
   return std::regex_replace(setStr, std::regex("#ASS"), regex_escape(rExpr));
 }
 std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
-  if (auto *structDecl = rExpr->getType()->getStructOrBoundGenericStruct()) {
+  bool cloneStruct = false;
+  if (rExpr->getType()->isExistentialType()) {
+    cloneStruct = true;
+  }
+  else if (auto *structDecl = rExpr->getType()->getStructOrBoundGenericStruct()) {
     bool isInitializer = false;
     if (auto *callExpr = dyn_cast<CallExpr>(rExpr)) {
       if (auto *constructorRefCallExpr = dyn_cast<ConstructorRefCallExpr>(callExpr->getFn())) {
@@ -197,9 +201,10 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
     else if (auto *arrayExpr = dyn_cast<ArrayExpr>(rExpr)) {
       isInitializer = true;
     }
-    if(!isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl))) {
-      baseStr = "_.cloneStruct(" + baseStr + ")";
-    }
+    cloneStruct = !isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl));
+  }
+  if(cloneStruct) {
+    baseStr = "_.cloneStruct(" + baseStr + ")";
   }
   return baseStr;
 }
