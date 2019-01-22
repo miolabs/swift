@@ -17,6 +17,7 @@
 #include <string>
 #include <regex>
 #include <unordered_map>
+#include <map>
 #include <iostream>
 #include <vector>
 #include "swift/AST/ASTContext.h"
@@ -121,7 +122,9 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Bool.&&", "#PRENOL(#A0 && #A1)"},
   {"Swift.(file).Bool.==", "#PRENOL(#A0 == #A1)"},
   {"Swift.(file).Bool.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"}
+  {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"},
+  {"Swift.(file).~=", "#PRENOL(#A0 == #A1)"},
+  {"Swift.(file).RangeExpression.~=", "#PRENOL(#A0).includes(#A1)"}
 };
 const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Int", false},
@@ -145,8 +148,16 @@ std::vector<std::string> optionalCondition = {};
 std::unordered_map<std::string, std::string> functionUniqueNames = {};
 std::unordered_map<std::string, int> functionOverloadedCounts = {};
 
+std::unordered_map<std::string, std::string> nameReplacements = {};
+
 std::string regex_escape(std::string replacement) {
   return std::regex_replace(replacement, std::regex("\\$"), "$$$$");
+}
+
+std::string matchNameReplacement(std::vector<unsigned> indexes) {
+  std::string nameReplacement = "$match";
+  for(auto index : indexes) nameReplacement += "[" + std::to_string(index) + "]";
+  return nameReplacement;
 }
 
 std::string dumpToStr(Expr *E) {
@@ -253,14 +264,23 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
     D = D->getSatisfiedProtocolRequirements()[satisfiedProtocolRequirementI];
   }
   
+  std::string name;
+  
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
-    return getFunctionName(functionDecl);
+    name = getFunctionName(functionDecl);
   }
-  if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
-    return getFunctionName(subscriptDecl);
+  else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
+    name = getFunctionName(subscriptDecl);
+  }
+  else {
+    name = D->getBaseName().userFacingName();
   }
   
-  return D->getBaseName().userFacingName();
+  if(nameReplacements.count(name)) {
+    return nameReplacements[name];
+  }
+  
+  return name;
 }
 
 std::string getType(Type T) {
@@ -733,8 +753,8 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
     void visitAnyPattern(AnyPattern *P) {
-      printCommon(P, "pattern_any");
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      /*printCommon(P, "pattern_any");
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
     void visitTypedPattern(TypedPattern *P) {
       printCommon(P, "pattern_typed") << '\n';
@@ -757,13 +777,13 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
     void visitExprPattern(ExprPattern *P) {
-      printCommon(P, "pattern_expr");
-      OS << '\n';
+      /*printCommon(P, "pattern_expr");
+      OS << '\n';*/
       if (auto m = P->getMatchExpr())
         printRec(m);
       else
         printRec(P->getSubExpr());
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
     void visitVarPattern(VarPattern *P) {
       printCommon(P, P->isLet() ? "pattern_let" : "pattern_var");
@@ -1106,27 +1126,40 @@ namespace {
     }
 
     void visitEnumCaseDecl(EnumCaseDecl *ECD) {
-      printCommon(ECD, "enum_case_decl");
+      /*printCommon(ECD, "enum_case_decl");
       for (EnumElementDecl *D : ECD->getElements()) {
         OS << '\n';
         printRec(D);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitEnumDecl(EnumDecl *ED) {
-      printCommon(ED, "enum_decl");
+      /*printCommon(ED, "enum_decl");
       printInherited(ED->getInherited());
       for (Decl *D : ED->getMembers()) {
         OS << '\n';
         printRec(D);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      visitAnyStructDecl(ED, "enum");
     }
 
     void visitEnumElementDecl(EnumElementDecl *EED) {
-      printCommon(EED, "enum_element_decl");
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      /*printCommon(EED, "enum_element_decl");
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      OS << "\nstatic " << EED->getName() << " = ";
+      if(EED->hasAssociatedValues()) OS << "() => (";
+      OS << "{$case: ";
+      if(EED->hasRawValueExpr()) {
+        OS << dumpToStr(EED->getRawValueExpr());
+      }
+      else {
+        OS << '"' << EED->getName() << '"';
+      }
+      if(EED->hasAssociatedValues()) OS << ", $tuple: arguments}";
+      OS << "}";
+      if(EED->hasAssociatedValues()) OS << ")";
     }
     
     void visitAnyStructDecl(NominalTypeDecl *D, std::string kind) {
@@ -1155,7 +1188,7 @@ namespace {
 
       auto Inherited = D->getInherited();
       bool wasClass = false, wasProtocol = false;
-      if(!Inherited.empty()) {
+      if(!Inherited.empty() && kind != "enum") {
         for(auto Super : Inherited) {
           bool isProtocol = false;
           if (auto *protocol = dyn_cast<ProtocolType>(Super.getType().getPointer())) { isProtocol = true; }
@@ -1230,83 +1263,110 @@ namespace {
       visitAnyStructDecl(CD, "class");
     }
     
-    struct PatternBindingInfo {
-      std::string varPrefix = "";
-      std::vector<std::string> varNames = {};
-      std::string varNameStr = "";
-      std::unordered_map<std::string, std::string> accessorBodies = {};
-      bool isTuple = false;
-      bool isTypeContext = false;
-      bool isProtocol = false;
-    };
-    PatternBindingInfo getPatternBindingInfo(Pattern *P) {
+    using FlattenedPattern = std::map<std::vector<unsigned>, const Pattern*>;
+    FlattenedPattern flattenPattern(const Pattern *P) {
       
-      PatternBindingInfo result;
+      FlattenedPattern result;
+      std::vector<unsigned> access;
       
-      walkPattern(P, result);
+      walkPattern(P, result, access);
       
       return result;
     }
-    void walkPattern(Pattern *P, PatternBindingInfo &info) {
+    void walkPattern(const Pattern *P, FlattenedPattern &info, const std::vector<unsigned> &access) {
       
       if(auto *tuplePattern = dyn_cast<TuplePattern>(P)) {
-        info.isTuple = true;
-        info.varNameStr += "{";
         unsigned i = 0;
         for (auto elt : tuplePattern->getElements()) {
-          if(i) info.varNameStr += ", ";
-          info.varNameStr += std::to_string(i++) + ": ";
-          walkPattern(elt.getPattern(), info);
-        }
-        info.varNameStr += "}";
-      }
-      else if(auto *namedPattern = dyn_cast<NamedPattern>(P)) {
-        auto *VD = namedPattern->getDecl();
-        if(!info.varPrefix.length()) {
-          if(!VD->getDeclContext()->isTypeContext()) {
-            info.varPrefix += VD->isLet() ? "const " : "let ";
-          }
-          else {
-            info.isTypeContext = true;
-            info.isProtocol = VD->getDeclContext()->getSelfProtocolDecl();
-            if(VD->isStatic()) info.varPrefix += "static ";
-            if(VD->isLet()) info.varPrefix += "readonly ";
-          }
-        }
-        
-        info.varNames.push_back(VD->getNameStr());
-        info.varNameStr += VD->getNameStr();
-        
-        if(!VD->getDeclContext()->getSelfProtocolDecl()) {
-          for (auto accessor : VD->getAllAccessors()) {
-            //swift autogenerates getter/setters for regular vars; no need to display them
-            if(accessor->isImplicit()) continue;
-            
-            std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
-            std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams()) + printFuncBody(accessor);
-            
-            info.accessorBodies[accessorType] = bodyStr;
-          }
+          std::vector<unsigned> elAccess(access);
+          elAccess.push_back(i++);
+          walkPattern(elt.getPattern(), info, elAccess);
         }
       }
       else if(auto *wrapped = dyn_cast<IsPattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info);
+        walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<ParenPattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info);
+        walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<TypedPattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info);
+        walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<VarPattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info);
+        walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<EnumElementPattern>(P)) {
-        if(wrapped->hasSubPattern()) walkPattern(wrapped->getSubPattern(), info);
+        if(wrapped->hasSubPattern()) walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<OptionalSomePattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info);
+        walkPattern(wrapped->getSubPattern(), info, access);
       }
+      else {
+        info[access] = P;
+      }
+    }
+    
+    struct SinglePatternBinding {
+      std::string varPrefix = "";
+      std::string varName = "";
+      std::unordered_map<std::string, std::string> accessorBodies = {};
+      VarDecl *varDecl = nullptr;
+      std::string tupleInit = "";
+      std::vector<std::string> varNames = {};
+    };
+    SinglePatternBinding singlePatternBinding(FlattenedPattern &flattened) {
+      
+      SinglePatternBinding info;
+      
+      for(auto const& node : flattened) {
+        if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+          auto *VD = namedPattern->getDecl();
+          if(!info.varDecl) {
+            info.varDecl = VD;
+            if(!VD->getDeclContext()->isTypeContext()) {
+              info.varPrefix += VD->isLet() ? "const " : "let ";
+            }
+            else {
+              if(VD->isStatic()) info.varPrefix += "static ";
+              if(VD->isLet()) info.varPrefix += "readonly ";
+            }
+            
+            if(node.first.size()) {
+              info.varName += "$tuple";
+            }
+            else {
+              info.varName = VD->getNameStr();
+            }
+          }
+          
+          if(!VD->getDeclContext()->getSelfProtocolDecl()) {
+            for (auto accessor : VD->getAllAccessors()) {
+              //swift autogenerates getter/setters for regular vars; no need to display them
+              if(accessor->isImplicit()) continue;
+              
+              std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+              std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams()) + printFuncBody(accessor);
+              
+              info.accessorBodies[accessorType] = bodyStr;
+            }
+          }
+          
+          info.varNames.push_back(VD->getNameStr());
+          
+          if(node.first.size()) {
+            info.tupleInit += ", ";
+            info.tupleInit += VD->getNameStr();
+            info.tupleInit += " = $tuple";
+            std::string indexes = "";
+            for(auto index : node.first) {
+              indexes += "[" + std::to_string(index) + "]";
+              info.tupleInit += " && $tuple" + indexes;
+            }
+          }
+        }
+      }
+      
+      return info;
     }
 
     void visitPatternBindingDecl(PatternBindingDecl *PBD) {
@@ -1324,47 +1384,45 @@ namespace {
       
       for (auto entry : PBD->getPatternList()) {
         
-        auto info = getPatternBindingInfo(entry.getPattern());
+        auto flattened = flattenPattern(entry.getPattern());
+        auto info = singlePatternBinding(flattened);
         
         bool isOverriden = false;
-        if (info.isTypeContext) {
+        if (info.varDecl->getDeclContext()->isTypeContext()) {
           if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
             isOverriden = true;
           }
         }
         
         if(!isOverriden || entry.getInit()) {
-          OS << "\n" << info.varPrefix << info.varNameStr;
-          if(info.isTypeContext && !info.isProtocol) {
+          OS << "\n" << info.varPrefix << info.varName;
+          if(info.varDecl->getDeclContext()->isTypeContext() && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
             OS << "$internal";
           }
           if(entry.getInit()) {
-            OS << " = ";
-            if(info.isTuple) OS << "(";
-            OS << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit()));
-            if(info.isTuple) OS << ") || {}";
+            OS << " = " << handleRAssignment(entry.getInit(), dumpToStr(entry.getInit()));
           }
         }
         
-        if(info.isTypeContext && !info.isProtocol) {
-          std::string internalGetVar = "this." + info.varNameStr + "$internal";
-          std::string internalSetVar = "this." + info.varNameStr + "$internal = $newValue";
+        if(info.varDecl->getDeclContext()->isTypeContext() && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
+          std::string internalGetVar = "this." + info.varName + "$internal";
+          std::string internalSetVar = "this." + info.varName + "$internal = $newValue";
           if(isOverriden) {
-            internalGetVar = "super." + info.varNameStr + "$get()";
-            internalSetVar = "super." + info.varNameStr + "$set($newValue)";
+            internalGetVar = "super." + info.varName + "$get()";
+            internalSetVar = "super." + info.varName + "$set($newValue)";
           }
           
-          OS << "\n" << info.varPrefix << info.varNameStr << "$get";
+          OS << "\n" << info.varPrefix << info.varName << "$get";
           if(info.accessorBodies.count("get")) {
             OS << info.accessorBodies["get"];
           }
           else {
             OS << "() { return " << internalGetVar << " }";
           }
-          OS << "\n" << info.varPrefix << "get " << info.varNameStr << "() { return this." << info.varNameStr << "$get() }";
+          OS << "\n" << info.varPrefix << "get " << info.varName << "() { return this." << info.varName << "$get() }";
 
           if(info.accessorBodies.count("set") || !info.accessorBodies.count("get")) {
-            OS << "\n" << info.varPrefix << info.varNameStr << "$set";
+            OS << "\n" << info.varPrefix << info.varName << "$set";
             if(info.accessorBodies.count("set")) {
               OS << info.accessorBodies["set"];
             }
@@ -1378,9 +1436,11 @@ namespace {
               if(info.accessorBodies.count("didSet")) OS << "\nif(this.$initialized) $didSet.call(this, $oldValue)";
               OS << "\n}";
             }
-            OS << "\n" << info.varPrefix << "set " << info.varNameStr << "($newValue) { this." << info.varNameStr << "$set($newValue) }\n";
+            OS << "\n" << info.varPrefix << "set " << info.varName << "($newValue) { this." << info.varName << "$set($newValue) }\n";
           }
         }
+        
+        OS << info.tupleInit;
         
         OS << ";\n";
       }
@@ -2170,12 +2230,12 @@ public:
     std::string conditionStr = "";
     std::string initializerStr = "";
     
-    auto info = PrintDecl(OS).getPatternBindingInfo(P);
-    initializerStr += info.varPrefix + info.varNameStr;
+    auto flattened = PrintDecl(OS).flattenPattern(P);
+    auto info = PrintDecl(OS).singlePatternBinding(flattened);
+    initializerStr += info.varPrefix + info.varName;
     if(initializerStr.length()) initializerStr += " = ";
-    if(info.isTuple) initializerStr += "(";
     initializerStr += handleRAssignment(initExpr, dumpToStr(initExpr));
-    if(info.isTuple) initializerStr += ") || {}";
+    initializerStr += info.tupleInit;
     
     for(auto varName: info.varNames) {
       if (conditionStr.length()) conditionStr += " && ";
@@ -2353,11 +2413,79 @@ public:
     OS << "continue";
   }
   void visitFallthroughStmt(FallthroughStmt *S) {
-    printCommon(S, "fallthrough_stmt");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    //we're ignoring fallthrough statement; it's supposed to be handled by switch itself
+    /*printCommon(S, "fallthrough_stmt");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
+  
+  CaseStmt *getCase(const ASTNode &caseNode) {
+    Stmt *AS = caseNode.get<Stmt*>();
+    auto *S = dyn_cast<CaseStmt>(AS);
+    return S;
+  }
+  void printSwitchConditions(CaseStmt *S) {
+    OS << "(";
+    bool first = true;
+    for (const auto &LabelItem : S->getCaseLabelItems()) {
+      if (!first) OS << " || ";
+      if (auto *CasePattern = LabelItem.getPattern()) {
+        bool first2 = true;
+        for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
+          if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
+            nameReplacements["$match"] = matchNameReplacement(node.first);
+            if(first2) first2 = false;
+            else OS << " && ";
+            OS << "(";
+            printRec(exprPattern);
+            OS << ")";
+            first = false;
+            nameReplacements = {};
+          }
+        }
+      }
+      if (auto *Guard = LabelItem.getGuardExpr()) {
+        if (auto *CasePattern = LabelItem.getPattern()) {
+          for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
+            if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+              nameReplacements[getName(namedPattern->getSingleVar())] = matchNameReplacement(node.first);
+            }
+          }
+        }
+        if(!first) OS << ") && (";
+        Guard->dump(OS, Indent+4);
+        first = false;
+        nameReplacements = {};
+      }
+    }
+    if(first) OS << "true";
+    OS << ")";
+  }
+  void printSwitchDeclarations(CaseStmt *S) {
+    for (const auto &LabelItem : S->getCaseLabelItems()) {
+      if (auto *CasePattern = LabelItem.getPattern()) {
+        for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
+          if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+            OS << "\nconst " << getName(namedPattern->getSingleVar()) << " = " << matchNameReplacement(node.first);
+          }
+        }
+      }
+    }
+  }
+  bool hasFallThrough(CaseStmt *S) {
+    if(auto *body = dyn_cast<BraceStmt>(S->getBody())) {
+      if(body->getElements().size()) {
+        if(auto *anyStmt = body->getElements().back().dyn_cast<Stmt*>()) {
+          if(auto *fallthroughStmt = dyn_cast<FallthroughStmt>(anyStmt)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+  
   void visitSwitchStmt(SwitchStmt *S) {
-    printCommon(S, "switch_stmt") << '\n';
+    /*printCommon(S, "switch_stmt") << '\n';
     printRec(S->getSubjectExpr());
     for (auto N : S->getRawCases()) {
       OS << '\n';
@@ -2366,10 +2494,45 @@ public:
       else
         printRec(N.get<Decl*>());
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "const $match = ";
+    printRec(S->getSubjectExpr());
+
+    auto switchCases = S->getRawCases();
+    for(unsigned i = 0; i < switchCases.size(); i++) {
+      OS << '\n';
+      if(i > 0) OS << "else ";
+      unsigned j = 0;
+      for(; j < switchCases.size() - i; j++) {
+        //if the i+j'th case doesn't have fallthrough, break
+        if(!hasFallThrough(getCase(switchCases[i + j]))) break;
+      }
+      OS << "if((";
+      for(unsigned k = i; k <= i + j; k++) {
+        if(k > i) OS << ") || (";
+        printSwitchConditions(getCase(switchCases[k]));
+      }
+      OS << ")) {";
+      for(unsigned k = i; k <= i + j; k++) {
+        if(k < i + j) {
+          OS << "if((";
+          for(unsigned l = i; l <= k; l++) {
+            if(l > i) OS << ") || (";
+            printSwitchConditions(getCase(switchCases[l]));
+          }
+          OS << ")) {";
+        }
+        printSwitchDeclarations(getCase(switchCases[k]));
+        printRec(getCase(switchCases[k])->getBody());
+        if(k < i + j) OS << "\n}";
+      }
+      OS << "\n}";
+      i += j;
+    }
   }
   void visitCaseStmt(CaseStmt *S) {
-    printCommon(S, "case_stmt");
+    /*printCommon(S, "case_stmt");
     if (S->hasUnknownAttr())
       OS << " @unknown";
     for (const auto &LabelItem : S->getCaseLabelItems()) {
@@ -2391,7 +2554,7 @@ public:
     }
     OS << '\n';
     printRec(S->getBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitFailStmt(FailStmt *S) {
     /*printCommon(S, "fail_stmt");
