@@ -115,6 +115,7 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Set.insert", "#L.add(#AA)"},
   {"Swift.(file).Set.count", "#L.size"},
   {"Swift.(file).Set.init()", "new Set()"},
+  {"Swift.(file).Set.init(_:)", "new Set(#AA)"},
   {"Swift.(file).Comparable....", "#PRENOLnew ClosedRange(#A0, #A1)"},
   {"Swift.(file).Comparable...<", "#PRENOLnew Range(#A0, #A1)"},
   {"Swift.(file).Optional.none", "null#NOL"},
@@ -173,6 +174,7 @@ std::string getMemberIdentifier(ValueDecl *D) {
   std::string str;
   llvm::raw_string_ostream stream(str);
   D->dumpRef(stream);
+  //std::cout << "/*" << stream.str() << "*/";
   return stream.str();
 }
 std::string getReplacement(ValueDecl *D, ConcreteDeclRef DR = nullptr, bool isAss = false) {
