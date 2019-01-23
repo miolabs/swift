@@ -912,7 +912,7 @@ namespace {
     }
 
     void visitExtensionDecl(ExtensionDecl *ED) {
-      printCommon(ED, "extension_decl", ExtensionColor);
+      /*printCommon(ED, "extension_decl", ExtensionColor);
       OS << ' ';
       ED->getExtendedType().print(OS);
       printInherited(ED->getInherited());
@@ -920,7 +920,11 @@ namespace {
         OS << '\n';
         printRec(Member);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      std::string extendedType = getType(ED->getExtendedType());
+      visitAnyStructDecl("extension", extendedType + "$extension extends " + extendedType, ED->getGenericParams(), ED->getMembers(), ED->getInherited());
+      OS << '\n' << extendedType << " = " << extendedType << "$extension";
     }
 
     void printDeclName(const ValueDecl *D) {
@@ -1014,7 +1018,7 @@ namespace {
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      visitAnyStructDecl(PD, "protocol");
+      visitAnyStructDecl("protocol", getName(PD), PD->getGenericParams(), PD->getMembers(), PD->getInherited());
     }
 
     void printCommon(ValueDecl *VD, const char *Name,
@@ -1166,7 +1170,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl(ED, "enum");
+      visitAnyStructDecl("enum", getName(ED), ED->getGenericParams(), ED->getMembers(), ED->getInherited());
     }
 
     void visitEnumElementDecl(EnumElementDecl *EED) {
@@ -1174,6 +1178,7 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       OS << "\nstatic " << EED->getName() << " = ";
       if(EED->hasAssociatedValues()) OS << "function() {return ";
+      OS << "Object.assign(new " << getType(EED->getParentEnum()->getDeclaredInterfaceType()) << "(), ";
       OS << "{rawValue: ";
       if(EED->hasRawValueExpr()) {
         OS << dumpToStr(EED->getRawValueExpr());
@@ -1182,17 +1187,17 @@ namespace {
         OS << '"' << EED->getName() << '"';
       }
       if(EED->hasAssociatedValues()) OS << ", ...arguments";
-      OS << "}";
+      OS << "})";
       if(EED->hasAssociatedValues()) OS << "}";
     }
     
-    void visitAnyStructDecl(NominalTypeDecl *D, std::string kind) {
-      std::string name = kind == "protocol" ? "interface" : "class";
-      OS << name << " " << getName(D) << "";
+    void visitAnyStructDecl(std::string kind, std::string name, GenericParamList *genericParams, DeclRange members, MutableArrayRef<TypeLoc> inherited) {
+      std::string definition = kind == "protocol" ? "interface" : "class";
+      OS << definition << " " << name << "";
       
       if(kind == "protocol") {
         bool wasAssociatedType = false;
-        for (Decl *subD : D->getMembers()) {
+        for (Decl *subD : members) {
           if(auto *associatedTypeDecl = dyn_cast<AssociatedTypeDecl>(subD)) {
             if(!wasAssociatedType) {
               OS << "<";
@@ -1207,13 +1212,12 @@ namespace {
         if(wasAssociatedType) OS << ">";
       }
       else {
-        printGenericParameters(OS, D->getGenericParams());
+        printGenericParameters(OS, genericParams);
       }
 
-      auto Inherited = D->getInherited();
       bool wasClass = false, wasProtocol = false;
-      if(!Inherited.empty() && kind != "enum") {
-        for(auto Super : Inherited) {
+      if(!inherited.empty() && kind != "enum") {
+        for(auto Super : inherited) {
           bool isProtocol = false;
           if (auto *protocol = dyn_cast<ProtocolType>(Super.getType().getPointer())) { isProtocol = true; }
           if ((isProtocol ? wasProtocol : wasClass)) {
@@ -1237,25 +1241,17 @@ namespace {
         OS << "\n$struct = true";
       }
 
-      for (Decl *subD : D->getMembers()) {
+      for (Decl *subD : members) {
         OS << '\n';
         printRec(subD);
       }
       
-      if(kind != "protocol") {
+      if(kind != "protocol" && kind != "extension") {
         OS << "\nconstructor(signature: string, ...params: any[]) {";
         if(wasClass) {
           OS << "\nsuper(null)";
         }
-        bool first = true;
-        for (Decl *subD : D->getMembers()) {
-          if (auto *constructor = dyn_cast<ConstructorDecl>(subD)) {
-            OS << "\n";
-            if (first) first = false;
-            else OS << "\nelse ";
-            OS << "if(signature === '" << getName(constructor) << "') this." << getName(constructor) << ".apply(this, params)";
-          }
-        }
+        OS << "\nif(this[signature]) this[signature].apply(this, params)";
         OS << "\nthis.$initialized = true";
         OS << "\n}";
       }
@@ -1271,7 +1267,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl(SD, "struct");
+      visitAnyStructDecl("struct", getName(SD), SD->getGenericParams(), SD->getMembers(), SD->getInherited());
     }
 
     void visitClassDecl(ClassDecl *CD) {
@@ -1284,7 +1280,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl(CD, "class");
+      visitAnyStructDecl("class", getName(CD), CD->getGenericParams(), CD->getMembers(), CD->getInherited());
     }
     
     using FlattenedPattern = std::map<std::vector<unsigned>, const Pattern*>;
