@@ -107,6 +107,8 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Array.init()", "new Array()"},
   {"Swift.(file).Array.init(repeating:count:)", "new Array(#A1).fill(#A0)"},
   {"Swift.(file).ArrayProtocol.filter", "#L.filter(#AA)"},
+  {"Swift.(file).Collection.makeIterator()", "#L.makeIterator(#AA)"},
+  {"Swift.(file).Dictionary.makeIterator()", "#L.makeIterator(#AA)"},
   {"Swift.(file).Sequence.reduce", "#L.reduce(#A1, #A0)"},
   {"Swift.(file).MutableCollection.sort(by:)", "#L.sortBool(#AA)"},
   {"Swift.(file).Collection.map", "#L.map(#AA)"},
@@ -124,7 +126,8 @@ const std::unordered_map<std::string, std::string> REPLACEMENTS = {
   {"Swift.(file).Bool.!=", "#PRENOL(#A0 != #A1)"},
   {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"},
   {"Swift.(file).~=", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).RangeExpression.~=", "#PRENOL(#A0).includes(#A1)"}
+  {"Swift.(file).RangeExpression.~=", "#PRENOL(#A0).includes(#A1)"},
+  {"Swift.(file)._findStringSwitchCase(cases:string:)", "#A0.indexOf(#A1)"}
 };
 const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Int", false},
@@ -171,6 +174,24 @@ std::string getMemberIdentifier(ValueDecl *D) {
   llvm::raw_string_ostream stream(str);
   D->dumpRef(stream);
   return stream.str();
+}
+std::string getReplacement(ValueDecl *D, ConcreteDeclRef DR = nullptr, bool isAss = false) {
+  std::string memberIdentifier = getMemberIdentifier(D);
+  if(memberIdentifier == "Swift.(file).Equatable.!=" && DR && DR.isSpecialized()) {
+    if(auto elo = DR.getSubstitutions().getReplacementTypes()[0]->getEnumOrBoundGenericEnum()) {
+      return "#PRENOL(#A0.rawValue != #A1.rawValue)";
+    }
+  }
+  if(!strncmp(D->getBaseName().userFacingName().data(), "__derived_enum_equals", 100)) {
+    return "#PRENOL(#A0.rawValue == #A1.rawValue)";
+  }
+  if(isAss && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
+    return REPLACEMENTS.at(memberIdentifier + "#ASS");
+  }
+  if(REPLACEMENTS.count(memberIdentifier)) {
+    return REPLACEMENTS.at(memberIdentifier);
+  }
+  return "";
 }
 
 Expr *skipWrapperExpressions(Expr *E) {
@@ -223,7 +244,8 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
 std::string getFunctionName(ValueDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   std::string userFacingName = D->getBaseName().userFacingName();
-  if(uniqueIdentifier.find("Swift.(file).") == 0) return userFacingName;
+  //TODO won't work when overriding native functions
+  //if(uniqueIdentifier.find("Swift.(file).") == 0) return userFacingName;
   if(!functionUniqueNames.count(uniqueIdentifier)) {
     if(D->isOperator()) {
       std::string stringifiedOp = "OP";
@@ -1149,17 +1171,17 @@ namespace {
       /*printCommon(EED, "enum_element_decl");
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       OS << "\nstatic " << EED->getName() << " = ";
-      if(EED->hasAssociatedValues()) OS << "() => (";
-      OS << "{$case: ";
+      if(EED->hasAssociatedValues()) OS << "function() {return ";
+      OS << "{rawValue: ";
       if(EED->hasRawValueExpr()) {
         OS << dumpToStr(EED->getRawValueExpr());
       }
       else {
         OS << '"' << EED->getName() << '"';
       }
-      if(EED->hasAssociatedValues()) OS << ", $tuple: arguments}";
+      if(EED->hasAssociatedValues()) OS << ", ...arguments";
       OS << "}";
-      if(EED->hasAssociatedValues()) OS << ")";
+      if(EED->hasAssociatedValues()) OS << "}";
     }
     
     void visitAnyStructDecl(NominalTypeDecl *D, std::string kind) {
@@ -1296,7 +1318,16 @@ namespace {
         walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<EnumElementPattern>(P)) {
-        if(wrapped->hasSubPattern()) walkPattern(wrapped->getSubPattern(), info, access);
+        info[access] = P;
+        if(wrapped->hasSubPattern()) {
+          //if enum has only 1 associated value and not multiple,
+          //EnumElementPattern's child will be ParenPattern instead of TuplePattern
+          //so we're trying to mimick TuplePattern in that case
+          std::vector<unsigned> elAccess(access);
+          if(auto *wrappedChild = dyn_cast<TuplePattern>(wrapped->getSubPattern())){}
+          else elAccess.push_back(0);
+          walkPattern(wrapped->getSubPattern(), info, elAccess);
+        }
       }
       else if(auto *wrapped = dyn_cast<OptionalSomePattern>(P)) {
         walkPattern(wrapped->getSubPattern(), info, access);
@@ -1690,7 +1721,7 @@ namespace {
       if (auto params = FD->getParameters()) {
         for (auto P : *params) {
           if(P->isInOut()) {
-            std::string paramName = P->getFullName().getBaseIdentifier().get();
+            std::string paramName = P->getBaseName().userFacingName().data();
             result += "\nlet " + paramName + " = " + paramName + "$inout.get()";
           }
         }
@@ -1703,7 +1734,7 @@ namespace {
       if (auto params = FD->getParameters()) {
         for (auto P : *params) {
           if(P->isInOut()) {
-            std::string paramName = P->getFullName().getBaseIdentifier().get();
+            std::string paramName = P->getBaseName().userFacingName().data();
             result += "\n" + paramName + "$inout.set(" + paramName + ")";
           }
         }
@@ -1713,6 +1744,9 @@ namespace {
     }
 
     std::string printAbstractFunc(AbstractFunctionDecl *FD, ValueDecl *NameD = nullptr, std::string suffix = "") {
+      
+      //TODO bodge; remove when we've implemented overriding native functions (including operators)
+      if(!strncmp(FD->getBaseName().userFacingName().data(), "__derived_enum_equals", 100)) return "";
       
       if(!NameD) NameD = FD;
       std::string str = "";
@@ -2441,6 +2475,13 @@ public:
             first = false;
             nameReplacements = {};
           }
+          else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
+            OS << "$match.rawValue == ";
+            OS << getType(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
+            if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
+            OS << ".rawValue";
+            first = false;
+          }
         }
       }
       if (auto *Guard = LabelItem.getGuardExpr()) {
@@ -2829,10 +2870,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = getMemberIdentifier(E->getDecl());
-    //OS << "/*" << memberIdentifier << "*/";
-    if(REPLACEMENTS.count(memberIdentifier)) {
-      string = REPLACEMENTS.at(memberIdentifier);
+    std::string replacement = getReplacement(E->getDecl(), E->getDeclRef());
+    if(replacement.length()) {
+      string = replacement;
     }
     else {
       string = getName(E->getDecl());
@@ -2869,9 +2909,7 @@ public:
     PrintWithColorRAII(OS, TypeReprColor) << "'";
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    if (E->getTypeRepr()) {
-      OS << getType(GetTypeOfExpr(E));
-    }
+    OS << getType(GetTypeOfExpr(E));
   }
 
   void visitOtherConstructorDeclRefExpr(OtherConstructorDeclRefExpr *E) {
@@ -2930,10 +2968,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string rString;
-    std::string memberIdentifier = getMemberIdentifier(E->getMember().getDecl());
-    //OS << "/*" << memberIdentifier << "*/";
-    if(REPLACEMENTS.count(memberIdentifier)) {
-      rString = REPLACEMENTS.at(memberIdentifier);
+    std::string replacement = getReplacement(E->getMember().getDecl(), E->getMember());
+    if(replacement.length()) {
+      rString = replacement;
     }
     else {
       rString = getName(E->getMember().getDecl());
@@ -3088,12 +3125,9 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     std::string string;
-    std::string memberIdentifier = getMemberIdentifier(E->getDecl().getDecl());
-    if(lAssignmentExpr == E && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
-      string = REPLACEMENTS.at(memberIdentifier + "#ASS");
-    }
-    else if(REPLACEMENTS.count(memberIdentifier)) {
-      string = REPLACEMENTS.at(memberIdentifier);
+    std::string replacement = getReplacement(E->getDecl().getDecl(), E->getDecl(), lAssignmentExpr == E);
+    if(replacement.length()) {
+      string = replacement;
     }
     else {
       string = "#L." + getName(E->getMember().getDecl()) + "$";
@@ -3530,10 +3564,9 @@ public:
       lString = "new " + dumpToStr(lConstructor->getArg());
       if (auto initDeclRef = dyn_cast<DeclRefExpr>(lConstructor->getFn())) {
         if (auto initDecl = dyn_cast<ConstructorDecl>(initDeclRef->getDecl())) {
-          std::string memberIdentifier = getMemberIdentifier(initDecl);
-          //OS << "/*" << memberIdentifier << "*/";
-          if(REPLACEMENTS.count(memberIdentifier)) {
-            lString = REPLACEMENTS.at(memberIdentifier);
+          std::string replacement = getReplacement(initDecl);
+          if(replacement.length()) {
+            lString = replacement;
             defaultSuffix = "";
           }
           else {
