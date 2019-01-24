@@ -17,7 +17,6 @@
 #include <string>
 #include <regex>
 #include <unordered_map>
-#include <map>
 #include <iostream>
 #include <vector>
 #include "swift/AST/ASTContext.h"
@@ -158,10 +157,12 @@ std::string regex_escape(std::string replacement) {
   return std::regex_replace(replacement, std::regex("\\$"), "$$$$");
 }
 
-std::string matchNameReplacement(std::vector<unsigned> indexes) {
-  std::string nameReplacement = "$match";
-  for(auto index : indexes) nameReplacement += "[" + std::to_string(index) + "]";
-  return nameReplacement;
+std::vector<BraceStmt*> openedBraceStmts = {};
+std::vector<std::pair<BraceStmt*, Expr*>> braceStmtsWithDefer = {};
+
+std::string matchNameReplacement(std::string name, std::vector<unsigned> indexes) {
+  for(auto index : indexes) name += "[" + std::to_string(index) + "]";
+  return name;
 }
 
 std::string dumpToStr(Expr *E) {
@@ -246,8 +247,6 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
 std::string getFunctionName(ValueDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   std::string userFacingName = D->getBaseName().userFacingName();
-  //TODO won't work when overriding native functions
-  //if(uniqueIdentifier.find("Swift.(file).") == 0) return userFacingName;
   if(!functionUniqueNames.count(uniqueIdentifier)) {
     if(D->isOperator()) {
       std::string stringifiedOp = "OP";
@@ -1283,7 +1282,7 @@ namespace {
       visitAnyStructDecl("class", getName(CD), CD->getGenericParams(), CD->getMembers(), CD->getInherited());
     }
     
-    using FlattenedPattern = std::map<std::vector<unsigned>, const Pattern*>;
+    using FlattenedPattern = std::vector<std::pair<std::vector<unsigned>, const Pattern*>>;
     FlattenedPattern flattenPattern(const Pattern *P) {
       
       FlattenedPattern result;
@@ -1295,6 +1294,8 @@ namespace {
     }
     void walkPattern(const Pattern *P, FlattenedPattern &info, const std::vector<unsigned> &access) {
       
+      if(!P) return;
+      
       if(auto *tuplePattern = dyn_cast<TuplePattern>(P)) {
         unsigned i = 0;
         for (auto elt : tuplePattern->getElements()) {
@@ -1304,6 +1305,7 @@ namespace {
         }
       }
       else if(auto *wrapped = dyn_cast<IsPattern>(P)) {
+        info.push_back(std::make_pair(access, P));
         walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<ParenPattern>(P)) {
@@ -1316,7 +1318,7 @@ namespace {
         walkPattern(wrapped->getSubPattern(), info, access);
       }
       else if(auto *wrapped = dyn_cast<EnumElementPattern>(P)) {
-        info[access] = P;
+        info.push_back(std::make_pair(access, P));
         if(wrapped->hasSubPattern()) {
           //if enum has only 1 associated value and not multiple,
           //EnumElementPattern's child will be ParenPattern instead of TuplePattern
@@ -1331,7 +1333,7 @@ namespace {
         walkPattern(wrapped->getSubPattern(), info, access);
       }
       else {
-        info[access] = P;
+        info.push_back(std::make_pair(access, P));
       }
     }
     
@@ -2208,7 +2210,22 @@ public:
 
   void visitBraceStmt(BraceStmt *S) {
     /*printCommon(S, "brace_stmt");*/
+    openedBraceStmts.push_back(S);
     printASTNodes(S->getElements());
+    
+    auto pair = std::begin(braceStmtsWithDefer);
+    while (pair != std::end(braceStmtsWithDefer)) {
+      if(pair->first != S) {
+        ++pair;
+        continue;
+      }
+      OS << "}catch($error){";
+      OS << dumpToStr(pair->second);
+      OS << ";throw $error}";
+      OS << dumpToStr(pair->second);
+      pair = braceStmtsWithDefer.erase(pair);
+    }
+    openedBraceStmts.pop_back();
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
@@ -2249,11 +2266,17 @@ public:
   }
 
   void visitDeferStmt(DeferStmt *S) {
-    printCommon(S, "defer_stmt") << '\n';
+    /*printCommon(S, "defer_stmt") << '\n';
     printRec(S->getTempDecl());
     OS << '\n';
     printRec(S->getCallExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "let $defer = () => {";
+    printRec(S->getTempDecl()->getBody());
+    OS << "\n}";
+    OS << "\ntry {";
+    braceStmtsWithDefer.push_back(std::make_pair(openedBraceStmts.back(), S->getCallExpr()));
   }
 
   struct ConditionAndInitializerStr { std::string conditionStr; std::string initializerStr; };
@@ -2450,63 +2473,87 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   
+  bool printSwitchCondition(std::string varName, const Pattern *P, const Expr *Guard) {
+    bool first = true;
+    OS << "(";
+    if (P) {
+      if(printPatternCondition(varName, P)) first = false;
+    }
+    if (Guard) {
+      if (P) {
+        for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
+          if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+            nameReplacements[getName(namedPattern->getSingleVar())] = matchNameReplacement(varName, node.first);
+          }
+        }
+      }
+      if(!first) OS << " && ";
+      OS << "(";
+      Guard->dump(OS, Indent+4);
+      OS << ")";
+      first = false;
+      nameReplacements = {};
+    }
+    if(first) OS << "true";
+    OS << ")";
+    return !first;
+  }
+  bool printPatternCondition(std::string varName, const Pattern *P) {
+    bool first = true;
+    for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
+      if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
+        if(first) first = false;
+        else OS << " && ";
+        nameReplacements[varName] = matchNameReplacement(varName, node.first);
+        OS << "(";
+        printRec(exprPattern);
+        OS << ")";
+        nameReplacements = {};
+      }
+      else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
+        if(first) first = false;
+        else OS << " && ";
+        OS << varName << ".rawValue == ";
+        OS << getType(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
+        if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
+        OS << ".rawValue";
+      }
+      else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
+        if(first) first = false;
+        else OS << " && ";
+        OS << varName << " instanceof ";
+        OS << getType(isPattern->getCastTypeLoc().getType());
+      }
+    }
+    return !first;
+  }
+  void printPatternDeclarations(std::string varName, const Pattern *P) {
+    for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
+      if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+        auto declaredName = getName(namedPattern->getSingleVar());
+        auto init = matchNameReplacement(varName, node.first);
+        if(declaredName == init) continue;
+        OS << "\nconst " << declaredName << " = " << init;
+      }
+    }
+  }
+  
   CaseStmt *getCase(const ASTNode &caseNode) {
     Stmt *AS = caseNode.get<Stmt*>();
     auto *S = dyn_cast<CaseStmt>(AS);
     return S;
   }
   void printSwitchConditions(CaseStmt *S) {
-    OS << "(";
     bool first = true;
     for (const auto &LabelItem : S->getCaseLabelItems()) {
       if (!first) OS << " || ";
-      if (auto *CasePattern = LabelItem.getPattern()) {
-        bool first2 = true;
-        for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
-          if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
-            nameReplacements["$match"] = matchNameReplacement(node.first);
-            if(first2) first2 = false;
-            else OS << " && ";
-            OS << "(";
-            printRec(exprPattern);
-            OS << ")";
-            first = false;
-            nameReplacements = {};
-          }
-          else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
-            OS << "$match.rawValue == ";
-            OS << getType(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
-            if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
-            OS << ".rawValue";
-            first = false;
-          }
-        }
-      }
-      if (auto *Guard = LabelItem.getGuardExpr()) {
-        if (auto *CasePattern = LabelItem.getPattern()) {
-          for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
-            if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
-              nameReplacements[getName(namedPattern->getSingleVar())] = matchNameReplacement(node.first);
-            }
-          }
-        }
-        if(!first) OS << ") && (";
-        Guard->dump(OS, Indent+4);
-        first = false;
-        nameReplacements = {};
-      }
+      if(printSwitchCondition("$match", LabelItem.getPattern(), LabelItem.getGuardExpr())) first = false;
     }
-    if(first) OS << "true";
-    OS << ")";
   }
   void printSwitchDeclarations(CaseStmt *S) {
     for (const auto &LabelItem : S->getCaseLabelItems()) {
       if (auto *CasePattern = LabelItem.getPattern()) {
-        for(auto const& node : PrintDecl(OS).flattenPattern(CasePattern)) {
-          if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
-            OS << "\nconst " << getName(namedPattern->getSingleVar()) << " = " << matchNameReplacement(node.first);
-          }
-        }
+        printPatternDeclarations("$match", CasePattern);
       }
     }
   }
@@ -2602,9 +2649,10 @@ public:
   }
 
   void visitThrowStmt(ThrowStmt *S) {
-    printCommon(S, "throw_stmt") << '\n';
+    /*printCommon(S, "throw_stmt") << '\n';*/
+    OS << "throw ";
     printRec(S->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void visitPoundAssertStmt(PoundAssertStmt *S) {
@@ -2615,21 +2663,29 @@ public:
   }
 
   void visitDoCatchStmt(DoCatchStmt *S) {
-    printCommon(S, "do_catch_stmt") << '\n';
+    //printCommon(S, "do_catch_stmt") << '\n';
+    OS << "try {";
     printRec(S->getBody());
-    OS << '\n';
-    Indent += 2;
+    //OS << '\n';
+    //Indent += 2;
+    OS << "\n} catch(error) {";
     visitCatches(S->getCatches());
-    Indent -= 2;
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    OS << "\nelse throw error";
+    OS << "\n}";
+    //Indent -= 2;
+    //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitCatches(ArrayRef<CatchStmt*> clauses) {
+    bool first = true;
     for (auto clause : clauses) {
+      OS << "\n";
+      if(first) first = false;
+      else OS << "else ";
       visitCatchStmt(clause);
     }
   }
   void visitCatchStmt(CatchStmt *clause) {
-    printCommon(clause, "catch") << '\n';
+    /*printCommon(clause, "catch") << '\n';
     printRec(clause->getErrorPattern());
     if (auto guard = clause->getGuardExpr()) {
       OS << '\n';
@@ -2637,7 +2693,14 @@ public:
     }
     OS << '\n';
     printRec(clause->getBody());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+
+    OS << "if(";
+    printSwitchCondition("error", clause->getErrorPattern(), clause->getGuardExpr());
+    OS << ") {";
+    printPatternDeclarations("error", clause->getErrorPattern());
+    printRec(clause->getBody());
+    OS << "\n}";
   }
 };
 
@@ -3399,24 +3462,26 @@ public:
   }
 
   void visitForceTryExpr(ForceTryExpr *E) {
-    printCommon(E, "force_try_expr");
-    OS << '\n';
+    /*printCommon(E, "force_try_expr");
+    OS << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void visitOptionalTryExpr(OptionalTryExpr *E) {
-    printCommon(E, "optional_try_expr");
-    OS << '\n';
+    /*printCommon(E, "optional_try_expr");
+    OS << '\n';*/
+    OS << "_.optionalTry(() => ";
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    OS << ")";
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void visitTryExpr(TryExpr *E) {
-    printCommon(E, "try_expr");
-    OS << '\n';
+    /*printCommon(E, "try_expr");
+    OS << '\n';*/
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
 
   void visitSequenceExpr(SequenceExpr *E) {
