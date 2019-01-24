@@ -922,7 +922,7 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
       std::string extendedType = getType(ED->getExtendedType());
-      visitAnyStructDecl("extension", extendedType + "$extension extends " + extendedType, ED->getGenericParams(), ED->getMembers(), ED->getInherited());
+      visitAnyStructDecl("extension", extendedType + "$extension extends " + extendedType, ED->getGenericParams(), ED->getMembers(), ED->getInherited(), false);
       OS << '\n' << extendedType << " = " << extendedType << "$extension";
     }
 
@@ -1017,7 +1017,7 @@ namespace {
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      visitAnyStructDecl("protocol", getName(PD), PD->getGenericParams(), PD->getMembers(), PD->getInherited());
+      visitAnyStructDecl("protocol", getName(PD), PD->getGenericParams(), PD->getMembers(), PD->getInherited(), PD->getDeclContext()->isTypeContext());
     }
 
     void printCommon(ValueDecl *VD, const char *Name,
@@ -1169,14 +1169,15 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("enum", getName(ED), ED->getGenericParams(), ED->getMembers(), ED->getInherited());
+      visitAnyStructDecl("enum", getName(ED), ED->getGenericParams(), ED->getMembers(), ED->getInherited(), ED->getDeclContext()->isTypeContext());
     }
 
     void visitEnumElementDecl(EnumElementDecl *EED) {
       /*printCommon(EED, "enum_element_decl");
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      OS << "\nstatic " << EED->getName() << " = ";
-      if(EED->hasAssociatedValues()) OS << "function() {return ";
+      OS << "\nstatic ";
+      if(!EED->hasAssociatedValues()) OS << "get ";
+      OS << EED->getName() << "() {return ";
       OS << "Object.assign(new " << getType(EED->getParentEnum()->getDeclaredInterfaceType()) << "(), ";
       OS << "{rawValue: ";
       if(EED->hasRawValueExpr()) {
@@ -1185,14 +1186,19 @@ namespace {
       else {
         OS << '"' << EED->getName() << '"';
       }
-      if(EED->hasAssociatedValues()) OS << ", ...arguments";
-      OS << "})";
-      if(EED->hasAssociatedValues()) OS << "}";
+      OS << ", ...arguments})}";
     }
     
-    void visitAnyStructDecl(std::string kind, std::string name, GenericParamList *genericParams, DeclRange members, MutableArrayRef<TypeLoc> inherited) {
+    void visitAnyStructDecl(std::string kind, std::string name, GenericParamList *genericParams, DeclRange members, MutableArrayRef<TypeLoc> inherited, bool isTypeContext) {
+      
       std::string definition = kind == "protocol" ? "interface" : "class";
-      OS << definition << " " << name << "";
+      
+      if(isTypeContext) {
+        OS << "static " << name << " = " << definition;
+      }
+      else {
+        OS << definition << " " << name;
+      }
       
       if(kind == "protocol") {
         bool wasAssociatedType = false;
@@ -1266,7 +1272,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("struct", getName(SD), SD->getGenericParams(), SD->getMembers(), SD->getInherited());
+      visitAnyStructDecl("struct", getName(SD), SD->getGenericParams(), SD->getMembers(), SD->getInherited(), SD->getDeclContext()->isTypeContext());
     }
 
     void visitClassDecl(ClassDecl *CD) {
@@ -1279,7 +1285,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("class", getName(CD), CD->getGenericParams(), CD->getMembers(), CD->getInherited());
+      visitAnyStructDecl("class", getName(CD), CD->getGenericParams(), CD->getMembers(), CD->getInherited(), CD->getDeclContext()->isTypeContext());
     }
     
     using FlattenedPattern = std::vector<std::pair<std::vector<unsigned>, const Pattern*>>;
