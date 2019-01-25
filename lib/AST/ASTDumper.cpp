@@ -135,13 +135,6 @@ const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Double", false},
   {"Swift.(file).Bool", false}
 };
-const std::unordered_map<std::string, std::string> REPLACEMENTS_TYPE = {
-  {"Swift.(file).Int", "number"},
-  {"Swift.(file).Double", "number"},
-  {"Swift.(file).String", "string"},
-  {"Swift.(file).Bool", "boolean"},
-  {"Swift.(file).Dictionary", "Map"}
-};
 
 Expr *lAssignmentExpr;
 Expr *functionArgsCall;
@@ -307,22 +300,48 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
 }
 
 std::string getType(Type T) {
-  if(auto *metatypeType = dyn_cast<AnyMetatypeType>(T.getPointer())) {
-    //that's to display e.g. `Double` instead of `Double.Type` when referring to the class itself
-    T = metatypeType->getInstanceType();
-  }
-
-  if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
-    std::string memberIdentifier = getMemberIdentifier(nominalDecl);
-    if(REPLACEMENTS_TYPE.count(memberIdentifier)) {
-      return REPLACEMENTS_TYPE.at(memberIdentifier);
+  std::string str = "";
+  while(true) {
+    if(!T) break;
+    if(auto TT = dyn_cast<LValueType>(T.getPointer())) {
+      T = TT->getObjectType();
+    }
+    else if(auto TT = dyn_cast<InOutType>(T.getPointer())) {
+      T = TT->getObjectType();
+    }
+    else if(auto TT = dyn_cast<AnyMetatypeType>(T.getPointer())) {
+      T = TT->getInstanceType();
+    }
+    else if(auto TT = dyn_cast<SugarType>(T.getPointer())) {
+      T = TT->getSinglyDesugaredTypeSlow();
+    }
+    else {
+      if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
+        str = getName(nominalDecl) + str;
+        if(getMemberIdentifier(nominalDecl).find("Swift.(file).") == 0) {
+          str = "MIO" + str;
+        }
+      }
+      if(auto genT = dyn_cast<AnyGenericType>(T.getPointer())) {
+        if(auto parent = genT->getParent()) {
+          str = "." + str;
+          T = parent;
+          if (auto sugarType = dyn_cast<SyntaxSugarType>(T.getPointer())) {
+            T = sugarType->getImplementationType();
+          }
+        }
+        else {
+          //str = std::to_string(int(T->getKind())) + "?" + str;
+          break;
+        }
+      }
+      else {
+        //str = std::to_string(int(T->getKind())) + "?" + str;
+        break;
+      }
     }
   }
-  
-  std::string str;
-  llvm::raw_string_ostream stream(str);
-  T->print(stream);
-  return stream.str();
+  return str;
 }
 
 Expr *skipInOutExpr(Expr *E) {
@@ -1581,14 +1600,6 @@ namespace {
       
       if(P->isInOut()) {
         OS << "$inout";
-      }
-      
-      if(P->hasType()) {
-        OS << ": " << getType(P->getType());
-      }
-      else if(P->hasInterfaceType()) {
-        //not sure what that's about
-        OS << ": " << getType(P->getInterfaceType());
       }
       
       if (auto init = P->getDefaultValue()) {
