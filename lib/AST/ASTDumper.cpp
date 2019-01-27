@@ -43,92 +43,55 @@
 
 using namespace swift;
 
-//the `^` is for unwrapping inout expressions; not sure how feasible in the long run
-const std::unordered_map<std::string, std::string> REPLACEMENTS = {
-  {"Swift.(file).String.count", "#L.length"},
+const bool LIB_GENERATE_MODE = true;
+const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/foundation/";
+
+const std::string ASSIGNMENT_OPERATORS[] = {"=", "+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|="};
+
+const std::unordered_map<std::string, std::string> LIB_BODIES = {
+  {"Swift.(file).String.count", "return this.length"},
   {"Swift.(file).print(_:separator:terminator:)", "console.log(#AA)"},
-  {"Swift.(file).String.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
-  {"Swift.(file).Int.==", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).Int.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).BinaryInteger.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).Int.>", "#PRENOL(#A0 > #A1)"},
-  {"Swift.(file).Int.<", "#PRENOL(#A0 < #A1)"},
-  {"Swift.(file).Int.>=", "#PRENOL(#A0 >= #A1)"},
-  {"Swift.(file).Int.<=", "#PRENOL(#A0 <= #A1)"},
-  {"Swift.(file).String.==", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).String.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).String.>", "#PRENOL(#A0 > #A1)"},
-  {"Swift.(file).String.<", "#PRENOL(#A0 < #A1)"},
-  {"Swift.(file).String.>=", "#PRENOL(#A0 >= #A1)"},
-  {"Swift.(file).String.<=", "#PRENOL(#A0 <= #A1)"},
-  {"Swift.(file).Character.==", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).Character.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).Character.>", "#PRENOL(#A0 > #A1)"},
-  {"Swift.(file).Character.<", "#PRENOL(#A0 < #A1)"},
-  {"Swift.(file).Character.>=", "#PRENOL(#A0 >= #A1)"},
-  {"Swift.(file).Character.<=", "#PRENOL(#A0 <= #A1)"},
-  {"Swift.(file).FloatingPoint.==", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).Equatable.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).FloatingPoint.>", "#PRENOL(#A0 > #A1)"},
-  {"Swift.(file).FloatingPoint.<", "#PRENOL(#A0 < #A1)"},
-  {"Swift.(file).FloatingPoint.>=", "#PRENOL(#A0 >= #A1)"},
-  {"Swift.(file).FloatingPoint.<=", "#PRENOL(#A0 <= #A1)"},
-  {"Swift.(file).Double.+", "#PRENOL(#A0 + #A1)"},
-  {"Swift.(file).Double.-", "#PRENOL(#A0 - #A1)"},
-  {"Swift.(file).Double.*", "#PRENOL(#A0 * #A1)"},
-  {"Swift.(file).Double./", "#PRENOL(#A0 / #A1)"},
-  {"Swift.(file).Int.+", "#PRENOL(#A0 + #A1)"},
-  {"Swift.(file).Int.-", "#PRENOL(#A0 - #A1)"},
-  {"Swift.(file).Int.*", "#PRENOL(#A0 * #A1)"},
-  {"Swift.(file).Int./", "#PRENOL((#A0 / #A1) | 0)"},
-  {"Swift.(file).Int.%", "#PRENOL(#A0 % #A1)"},
-  {"Swift.(file).Int.+=", "#PRENOL(^#A0 + #A1)#ISASS"},
-  {"Swift.(file).Int.-=", "#PRENOL(^#A0 - #A1)#ISASS"},
-  {"Swift.(file).Int.*=", "#PRENOL(^#A0 * #A1)#ISASS"},
-  {"Swift.(file).Int./=", "#PRENOL((^#A0 / #A1) | 0)#ISASS"},
-  {"Swift.(file).Int.%=", "#PRENOL(^#A0 % #A1)#ISASS"},
-  {"Swift.(file).String.+", "#PRENOL(#A0 + #A1)"},
-  {"Swift.(file).SignedNumeric.-", "(-(#AA))#NOL"},
-  {"Swift.(file).Dictionary.subscript(_:)", "#L.get(#AA)"},
-  {"Swift.(file).Dictionary.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
-  {"Swift.(file).Dictionary.count", "#L.size"},
-  {"Swift.(file).Array.subscript(_:)", "#L[#AA]"},
-  {"Swift.(file).Array.subscript(_:)#ASS", "#L.setConditional(#AA, #ASS)"},
-  {"Swift.(file).Array.count", "#L.length"},
-  {"Swift.(file).Array.+", "#PRENOL#A0.concat(#A1)"},
-  {"Swift.(file).Array.+=", "#PRENOL^#A0.pushMany(#A1)"},
-  {"Swift.(file).Array.append", "#L.push(#AA)"},
-  {"Swift.(file).Array.append(contentsOf:)", "#L.pushMany(#AA)"},
-  {"Swift.(file).Array.insert(_:at:)", "#L.splice(#A1, 0, #A0)"},
-  {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:at:)", "#L.pushManyAt(#AA)"},
-  {"Swift.(file).Array.remove(at:)", "#L.splice(#AA, 1)"},
-  {"Swift.(file).BidirectionalCollection.joined(separator:)", "#L.join(#AA)"},
-  {"Swift.(file).Array.init()", "new Array()"},
-  {"Swift.(file).Array.init(repeating:count:)", "new Array(#A1).fill(#A0)"},
-  {"Swift.(file).ArrayProtocol.filter", "#L.filter(#AA)"},
-  {"Swift.(file).Collection.makeIterator()", "#L.makeIterator(#AA)"},
-  {"Swift.(file).Dictionary.makeIterator()", "#L.makeIterator(#AA)"},
-  {"Swift.(file).Sequence.reduce", "#L.reduce(#A1, #A0)"},
-  {"Swift.(file).MutableCollection.sort(by:)", "#L.sortBool(#AA)"},
-  {"Swift.(file).Collection.map", "#L.map(#AA)"},
-  {"Swift.(file).Set.insert", "#L.add(#AA)"},
-  {"Swift.(file).Set.count", "#L.size"},
-  {"Swift.(file).Set.init()", "new Set()"},
-  {"Swift.(file).Set.init(_:)", "new Set(#AA)"},
-  {"Swift.(file).Comparable....", "#PRENOLnew ClosedRange(#A0, #A1)"},
-  {"Swift.(file).Comparable...<", "#PRENOLnew Range(#A0, #A1)"},
-  {"Swift.(file).Optional.none", "null#NOL"},
-  {"Swift.(file).??", "_.nilCoalescing(#A0, #A1)"},
-  {"Swift.(file).Bool.!", "(!(#AA))#NOL"},
-  {"Swift.(file).Bool.||", "#PRENOL(#A0 || #A1)"},
-  {"Swift.(file).Bool.&&", "#PRENOL(#A0 && #A1)"},
-  {"Swift.(file).Bool.==", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).Bool.!=", "#PRENOL(#A0 != #A1)"},
-  {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"},
-  {"Swift.(file).~=", "#PRENOL(#A0 == #A1)"},
-  {"Swift.(file).RangeExpression.~=", "#PRENOL(#A0).includes(#A1)"},
-  {"Swift.(file)._findStringSwitchCase(cases:string:)", "#A0.indexOf(#A1)"}
+  {"Swift.(file).Dictionary.subscript(_:)", "return this.get(#AA)"},
+  {"Swift.(file).Dictionary.subscript(_:)#ASS", "if(#A0 == null) this.delete(#A1)\nelse this.set(#A1, #A0)"},
+  {"Swift.(file).Dictionary.count", "return this.size"},
+  {"Swift.(file).Array.subscript(_:)", "return this[#AA]"},
+  {"Swift.(file).Array.subscript(_:)#ASS", "if(#A0 == null) this.splice(#A1, 1)\nelse this[#A1]=#A0"},
+  {"Swift.(file).Array.count", "return this.length"},
+  {"Swift.(file).Array.+", "return #A0.concat(#A1)"},
+  {"Swift.(file).Array.+=", "#A0.get().appendContentsOf(#A1)"},
+  {"Swift.(file).Array.append", "this.push(#AA)"},
+  {"Swift.(file).Array.append(contentsOf:)", "this.push.apply(this, #A0)"},
+  {"Swift.(file).Array.insert(_:at:)", "this.splice(#A1, 0, #A0)"},
+  {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:at:)", "this.splice.apply(this, [#A1, 0].concat(#A0))"},
+  {"Swift.(file).Array.remove(at:)", "this.splice(#AA, 1)"},
+  {"Swift.(file).BidirectionalCollection.joined(separator:)", "return this.join(#AA)"},
+  {"Swift.(file).Array.init(repeating:count:)", "for(let i = 0; i < #A1; i++) this.push(#A0)"},
+  {"Swift.(file).Collection.makeIterator()", "return new SwiftIterator((current) => this[current])"},
+  {"Swift.(file).Dictionary.makeIterator()", "return new SwiftIterator((current) => Array.from(this)[current])"},
+  {"Swift.(file).Sequence.reduce", "this.reduce(#A1, #A0)"},
+  {"Swift.(file).MutableCollection.sort(by:)", "var _iteratee = function(a, b) {return #AA(a, b) ? -1 : 1}\nreturn this.sort(_iteratee)"},
+  {"Swift.(file).Set.insert", "this.add(#AA)"},
+  {"Swift.(file).Set.count", "return this.size"},
+  {"Swift.(file).??", "return #A0 != null ? #A0 : #A1"},
+  {"Swift.(file).~=", "if(#A0 instanceof ClosedRange || #A0 instanceof Range) return #A0.includes(#A1)\nreturn #A0 == #A1"},
+  {"Swift.(file)._findStringSwitchCase(cases:string:)", "return #A0.indexOf(#A1)"}
 };
+
+const std::unordered_map<std::string, std::string> LIB_EXTENDS = {
+  {"Swift.(file).Array", "Array"},
+  {"Swift.(file).String", "String"},
+  {"Swift.(file).Character", "Character"},
+  {"Swift.(file).Dictionary", "Map"},
+  {"Swift.(file).Set", "Set"}
+};
+
+const std::unordered_map<std::string, std::string> REPLACEMENTS = {
+  {"Swift.(file).Comparable....", "new ClosedRange(#A0, #A1)"},
+  {"Swift.(file).Comparable...<", "new Range(#A0, #A1)"},
+  {"Swift.(file).Optional.none", "null#NOL"},
+  {"Swift.(file).Double.init(_:)", "parseFloat(#AA)"}
+};
+
 const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
   {"Swift.(file).Int", false},
   {"Swift.(file).String", false},
@@ -141,7 +104,17 @@ Expr *functionArgsCall;
 
 std::vector<std::string> optionalCondition = {};
 
-std::unordered_map<std::string, std::string> functionUniqueNames = {};
+std::unordered_map<std::string, std::string> functionUniqueNames = {
+  {"Swift.(file).RangeReplaceableCollection.append", "append"},
+  {"Swift.(file).RangeReplaceableCollection.append(contentsOf:)", "appendContentsOf"},
+  {"Swift.(file)._ArrayProtocol.insert(_:at:)", "insert"},
+  {"Swift.(file).RangeReplaceableCollection.insert(_:at:)", "insert"},
+  {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:at:)", "insertContentsOfAt"},
+  {"Swift.(file).RangeReplaceableCollection.init()", "init"},
+  {"Swift.(file).RangeReplaceableCollection.init(repeating:count:)", "initRepeatingCount"},
+  {"Swift.(file).Set.init()", "init"},
+  {"Swift.(file).Set.init(_:)", "init"}
+};
 std::unordered_map<std::string, int> functionOverloadedCounts = {};
 
 std::unordered_map<std::string, std::string> nameReplacements = {};
@@ -173,14 +146,6 @@ std::string getMemberIdentifier(ValueDecl *D) {
 }
 std::string getReplacement(ValueDecl *D, ConcreteDeclRef DR = nullptr, bool isAss = false) {
   std::string memberIdentifier = getMemberIdentifier(D);
-  if(memberIdentifier == "Swift.(file).Equatable.!=" && DR && DR.isSpecialized()) {
-    if(auto elo = DR.getSubstitutions().getReplacementTypes()[0]->getEnumOrBoundGenericEnum()) {
-      return "#PRENOL(#A0.rawValue != #A1.rawValue)";
-    }
-  }
-  if(!strncmp(D->getBaseName().userFacingName().data(), "__derived_enum_equals", 100)) {
-    return "#PRENOL(#A0.rawValue == #A1.rawValue)";
-  }
   if(isAss && REPLACEMENTS.count(memberIdentifier + "#ASS")) {
     return REPLACEMENTS.at(memberIdentifier + "#ASS");
   }
@@ -268,17 +233,22 @@ std::string getFunctionName(ValueDecl *D) {
   }
   return functionUniqueNames[uniqueIdentifier];
 }
-std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 0) {
+ValueDecl *getDeclRoot(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 0) {
   while (auto *overriden = D->getOverriddenDecl()) {
     D = overriden;
   }
   auto satisfiedProtocolRequirements = D->getSatisfiedProtocolRequirements();
   if(satisfiedProtocolRequirementI > 0 && satisfiedProtocolRequirementI >= satisfiedProtocolRequirements.size()) {
-    return "!NO_DUPLICATE";
+    return nullptr;
   }
   if(!satisfiedProtocolRequirements.empty()) {
     D = D->getSatisfiedProtocolRequirements()[satisfiedProtocolRequirementI];
   }
+  return D;
+}
+std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 0, bool prefixNative = false) {
+  D = getDeclRoot(D, satisfiedProtocolRequirementI);
+  if(!D) return "!NO_DUPLICATE";
   
   std::string name;
   
@@ -292,6 +262,10 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
     name = D->getBaseName().userFacingName();
   }
   
+  if(prefixNative && getMemberIdentifier(D).find("Swift.(file).") == 0) {
+    name = "MIO" + name;
+  }
+  
   if(nameReplacements.count(name)) {
     return nameReplacements[name];
   }
@@ -299,8 +273,7 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   return name;
 }
 
-std::string getType(Type T) {
-  std::string str = "";
+Type unwrapType(Type T) {
   while(true) {
     if(!T) break;
     if(auto TT = dyn_cast<LValueType>(T.getPointer())) {
@@ -312,34 +285,36 @@ std::string getType(Type T) {
     else if(auto TT = dyn_cast<AnyMetatypeType>(T.getPointer())) {
       T = TT->getInstanceType();
     }
-    else if(auto TT = dyn_cast<SugarType>(T.getPointer())) {
-      T = TT->getSinglyDesugaredTypeSlow();
+    else if(auto TT = dyn_cast<SyntaxSugarType>(T.getPointer())) {
+      T = TT->getSinglyDesugaredType();
     }
-    else {
-      if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
-        str = getName(nominalDecl) + str;
-        if(getMemberIdentifier(nominalDecl).find("Swift.(file).") == 0) {
-          str = "MIO" + str;
-        }
-      }
-      if(auto genT = dyn_cast<AnyGenericType>(T.getPointer())) {
-        if(auto parent = genT->getParent()) {
-          str = "." + str;
-          T = parent;
-          if (auto sugarType = dyn_cast<SyntaxSugarType>(T.getPointer())) {
-            T = sugarType->getImplementationType();
-          }
-        }
-        else {
-          //str = std::to_string(int(T->getKind())) + "?" + str;
-          break;
-        }
-      }
-      else {
-        //str = std::to_string(int(T->getKind())) + "?" + str;
-        break;
-      }
+    else if(auto TT = dyn_cast<ParenType>(T.getPointer())) {
+      T = TT->getUnderlyingType()->getInOutObjectType();
     }
+    else break;
+  }
+  return T;
+}
+
+std::string getTypeName(Type T) {
+  std::string str = "";
+  while(true) {
+    if(!T) break;
+    T = unwrapType(T);
+    if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
+      str = getName(nominalDecl, 0, true) + str;
+    }
+    if(auto genT = dyn_cast<AnyGenericType>(T.getPointer())) {
+      if(auto parent = genT->getParent()) {
+        str = "." + str;
+        T = parent;
+        if (auto sugarType = dyn_cast<SyntaxSugarType>(T.getPointer())) {
+          T = sugarType->getImplementationType();
+        }
+      }
+      else break;
+    }
+    else break;
   }
   return str;
 }
@@ -940,9 +915,11 @@ namespace {
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      std::string extendedType = getType(ED->getExtendedType());
-      visitAnyStructDecl("extension", extendedType + "$extension extends " + extendedType, ED->getGenericParams(), ED->getMembers(), ED->getInherited(), false);
-      OS << '\n' << extendedType << " = " << extendedType << "$extension";
+      std::string extendedType = getTypeName(ED->getExtendedType());
+      std::string memberIdentifier = getMemberIdentifier(unwrapType(ED->getExtendedType())->getNominalOrBoundGenericNominal());
+      std::string extensionName = std::regex_replace(extendedType, std::regex("\\."), "_") + "$extension";
+      visitAnyStructDecl("extension", extensionName, ED->getGenericParams(), ED->getMembers(), ED->getInherited(), false, memberIdentifier, extendedType);
+      OS << '\n' << extendedType << " = " << extensionName;
     }
 
     void printDeclName(const ValueDecl *D) {
@@ -1036,7 +1013,7 @@ namespace {
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       
-      visitAnyStructDecl("protocol", getName(PD), PD->getGenericParams(), PD->getMembers(), PD->getInherited(), PD->getDeclContext()->isTypeContext());
+      visitAnyStructDecl("protocol", getName(PD, 0, true), PD->getGenericParams(), PD->getMembers(), PD->getInherited(), PD->getDeclContext()->isTypeContext(), getMemberIdentifier(PD));
     }
 
     void printCommon(ValueDecl *VD, const char *Name,
@@ -1117,13 +1094,35 @@ namespace {
       PrintWithColorRAII(OS, ASTNodeColor) << "source_file ";
       PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';*/
       
-      for (Decl *D : SF.Decls) {
-        if (D->isImplicit())
-          continue;
-
-        OS << '\n';
-        printRec(D);
+      if(LIB_GENERATE_MODE) {
+        SmallVector<Decl *, 64> topLevelDecls;
+        SF.getASTContext().getStdlibModule()->getTopLevelDecls(topLevelDecls);
+        for (Decl *D : topLevelDecls) {
+          std::string outName = "_";
+          if(auto *VD = dyn_cast<ValueDecl>(D)) {
+            outName = getName(VD, 0, true);
+          }
+          else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
+            outName = getTypeName(ED->getExtendedType());
+          }
+          if(outName.find("MIO_") == 0) continue;
+          std::error_code OutErrorInfo;
+          llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, llvm::sys::fs::F_Append);
+          PrintDecl(outFile, Indent + 2).visit(D);
+          outFile << "\n\n";
+          outFile.close();
+        }
       }
+      else {
+        for (Decl *D : SF.Decls) {
+          /*if (D->isImplicit())
+           continue;*/
+          
+          OS << '\n';
+          printRec(D);
+        }
+      }
+      
       /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
@@ -1188,7 +1187,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("enum", getName(ED), ED->getGenericParams(), ED->getMembers(), ED->getInherited(), ED->getDeclContext()->isTypeContext());
+      visitAnyStructDecl("enum", getName(ED, 0, true), ED->getGenericParams(), ED->getMembers(), ED->getInherited(), ED->getDeclContext()->isTypeContext(), getMemberIdentifier(ED));
     }
 
     void visitEnumElementDecl(EnumElementDecl *EED) {
@@ -1197,7 +1196,7 @@ namespace {
       OS << "\nstatic ";
       if(!EED->hasAssociatedValues()) OS << "get ";
       OS << EED->getName() << "() {return ";
-      OS << "Object.assign(new " << getType(EED->getParentEnum()->getDeclaredInterfaceType()) << "(), ";
+      OS << "Object.assign(new " << getTypeName(EED->getParentEnum()->getDeclaredInterfaceType()) << "(), ";
       OS << "{rawValue: ";
       if(EED->hasRawValueExpr()) {
         OS << dumpToStr(EED->getRawValueExpr());
@@ -1208,7 +1207,7 @@ namespace {
       OS << ", ...arguments})}";
     }
     
-    void visitAnyStructDecl(std::string kind, std::string name, GenericParamList *genericParams, DeclRange members, MutableArrayRef<TypeLoc> inherited, bool isTypeContext) {
+    void visitAnyStructDecl(std::string kind, std::string name, GenericParamList *genericParams, DeclRange members, MutableArrayRef<TypeLoc> inherited, bool isTypeContext, std::string memberIdentifier, std::string extensionName = "") {
       
       std::string definition = kind == "protocol" ? "interface" : "class";
       
@@ -1239,6 +1238,14 @@ namespace {
         printGenericParameters(OS, genericParams);
       }
 
+      if(kind == "extension") {
+        OS << " extends " << extensionName;
+      }
+      
+      if(LIB_GENERATE_MODE && kind != "extension" && LIB_EXTENDS.count(memberIdentifier)) {
+        OS << " extends " << LIB_EXTENDS.at(memberIdentifier);
+      }
+      
       bool wasClass = false, wasProtocol = false;
       if(!inherited.empty() && kind != "enum") {
         for(auto Super : inherited) {
@@ -1255,7 +1262,7 @@ namespace {
             OS << " extends ";
             wasClass = true;
           }
-          OS << getType(Super.getType());
+          OS << getTypeName(Super.getType());
         }
       }
       
@@ -1291,7 +1298,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("struct", getName(SD), SD->getGenericParams(), SD->getMembers(), SD->getInherited(), SD->getDeclContext()->isTypeContext());
+      visitAnyStructDecl("struct", getName(SD, 0, true), SD->getGenericParams(), SD->getMembers(), SD->getInherited(), SD->getDeclContext()->isTypeContext(), getMemberIdentifier(SD));
     }
 
     void visitClassDecl(ClassDecl *CD) {
@@ -1304,7 +1311,7 @@ namespace {
         printRec(D);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      visitAnyStructDecl("class", getName(CD), CD->getGenericParams(), CD->getMembers(), CD->getInherited(), CD->getDeclContext()->isTypeContext());
+      visitAnyStructDecl("class", getName(CD, 0, true), CD->getGenericParams(), CD->getMembers(), CD->getInherited(), CD->getDeclContext()->isTypeContext(), getMemberIdentifier(CD));
     }
     
     using FlattenedPattern = std::vector<std::pair<std::vector<unsigned>, const Pattern*>>;
@@ -1443,6 +1450,11 @@ namespace {
         auto flattened = flattenPattern(entry.getPattern());
         auto info = singlePatternBinding(flattened);
         
+        if(LIB_GENERATE_MODE) {
+          if(info.varName[0] == '_') continue;
+          OS << "\n/*" << getMemberIdentifier(info.varDecl) << "*/";
+        }
+        
         bool isOverriden = false;
         if (info.varDecl->getDeclContext()->isTypeContext()) {
           if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
@@ -1450,7 +1462,7 @@ namespace {
           }
         }
         
-        if(!isOverriden || entry.getInit()) {
+        if((!isOverriden || entry.getInit()) && !LIB_GENERATE_MODE) {
           OS << "\n" << info.varPrefix << info.varName;
           if(info.varDecl->getDeclContext()->isTypeContext() && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
             OS << "$internal";
@@ -1469,7 +1481,13 @@ namespace {
           }
           
           OS << "\n" << info.varPrefix << info.varName << "$get";
-          if(info.accessorBodies.count("get")) {
+          if(LIB_GENERATE_MODE) {
+            std::string defaultBody = "return this." + info.varName;
+            std::string memberIdentifier = getMemberIdentifier(info.varDecl);
+            if(LIB_BODIES.count(memberIdentifier)) defaultBody = LIB_BODIES.at(memberIdentifier);
+            OS << "() {\n" + defaultBody + "\n}";
+          }
+          else if(info.accessorBodies.count("get")) {
             OS << info.accessorBodies["get"];
           }
           else {
@@ -1477,7 +1495,7 @@ namespace {
           }
           OS << "\n" << info.varPrefix << "get " << info.varName << "() { return this." << info.varName << "$get() }";
 
-          if(info.accessorBodies.count("set") || !info.accessorBodies.count("get")) {
+          if((info.accessorBodies.count("set") || !info.accessorBodies.count("get")) && !LIB_GENERATE_MODE) {
             OS << "\n" << info.varPrefix << info.varName << "$set";
             if(info.accessorBodies.count("set")) {
               OS << info.accessorBodies["set"];
@@ -1678,6 +1696,14 @@ namespace {
       signature += genericStream.str();
 
       signature += "(";
+      signature += printFuncParams(params);
+      signature += ")";
+
+      return signature;
+    }
+    
+    std::string printFuncParams(ParameterList *params) {
+      std::string signature = "";
       if(params) {
         bool first = true;
         for (auto P : *params) {
@@ -1689,8 +1715,6 @@ namespace {
           signature += parameterStream.str();
         }
       }
-      signature += ")";
-
       return signature;
     }
     
@@ -1759,14 +1783,75 @@ namespace {
       if(result.length()) result = "})()" + result + "\nreturn $result";
       return result;
     }
+    
+    std::string libGenerateFuncBody(AbstractFunctionDecl *FD) {
+      std::string memberIdentifier = getMemberIdentifier(FD);
+      std::string userFacingName = FD->getBaseName().userFacingName();
+      std::string defaultBody;
+      if(auto *accessorDecl = dyn_cast<AccessorDecl>(FD)) {
+        if(getAccessorKindString(accessorDecl->getAccessorKind()) == "set") {
+          //subscript set
+          memberIdentifier += "#ASS";
+          defaultBody = "this[#A1] = #A0";
+        }
+        else {
+          //subscript get
+          defaultBody = "return this[#A0]";
+        }
+      }
+      else if(auto *constructorDecl = dyn_cast<ConstructorDecl>(FD)) {
+        //constructor
+        defaultBody = "";
+      }
+      else if(FD->isOperator()) {
+        //operator
+        if(std::find(std::begin(ASSIGNMENT_OPERATORS), std::end(ASSIGNMENT_OPERATORS), userFacingName) != std::end(ASSIGNMENT_OPERATORS)) {
+          defaultBody = "return #A0 " + userFacingName + " #A1";
+        }
+        else {
+          defaultBody = "#A0.set(#A0.get() " + userFacingName + " #A1)";
+        }
+      }
+      else {
+        //regular function
+        //TODO don't include `return` if type void (getResultInterfaceType?)
+        defaultBody = "return this." + userFacingName + "(#AA)";
+      }
+      if(LIB_BODIES.count(memberIdentifier)) defaultBody = LIB_BODIES.at(memberIdentifier);
+      
+      auto *params = FD->getParameters();
+      if(defaultBody.find("#AA") != std::string::npos) {
+        defaultBody = std::regex_replace(defaultBody, std::regex("#AA"), regex_escape(printFuncParams(params)));
+      }
+      else {
+        if(params) {
+          int i = 0;
+          for (auto P : *params) {
+            std::string parameterStr;
+            llvm::raw_string_ostream parameterStream(parameterStr);
+            printParameter(P, parameterStream);
+            defaultBody = std::regex_replace(defaultBody, std::regex("#A" + std::to_string(i)), regex_escape(parameterStream.str()));
+            i++;
+          }
+        }
+      }
+
+      return defaultBody;
+    }
 
     std::string printAbstractFunc(AbstractFunctionDecl *FD, ValueDecl *NameD = nullptr, std::string suffix = "") {
       
-      //TODO bodge; remove when we've implemented overriding native functions (including operators)
-      if(!strncmp(FD->getBaseName().userFacingName().data(), "__derived_enum_equals", 100)) return "";
-      
       if(!NameD) NameD = FD;
       std::string str = "";
+      
+      if(LIB_GENERATE_MODE) {
+        str += "/*" + getMemberIdentifier(NameD) + "*/\n";
+        for(unsigned long i = 0; i < 1000; i++) {
+          auto *declRoot = getDeclRoot(NameD, i);
+          if(!declRoot) break;
+          str += "/*" + getMemberIdentifier(declRoot) + "*/\n";
+        }
+      }
       
       std::string functionPrefix = "";
       if(!FD->getDeclContext()->isTypeContext()) {
@@ -1780,10 +1865,19 @@ namespace {
       std::string functionName = getName(NameD) + suffix;
       str += functionName;
       
+      if(LIB_GENERATE_MODE && functionName[0] == '_') {
+        return "";
+      }
+      
       std::string signature = printFuncSignature(FD->getParameters(), FD->getGenericParams());
       str += signature;
 
-      str += printFuncBody(FD);
+      if(LIB_GENERATE_MODE) {
+        str += " {\n" + libGenerateFuncBody(FD) + "\n}";
+      }
+      else {
+        str += printFuncBody(FD);
+      }
       
       unsigned long i = 1;
       while(true) {
@@ -2531,7 +2625,7 @@ public:
         if(first) first = false;
         else OS << " && ";
         OS << varName << ".rawValue == ";
-        OS << getType(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
+        OS << getTypeName(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
         if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
         OS << ".rawValue";
       }
@@ -2539,7 +2633,7 @@ public:
         if(first) first = false;
         else OS << " && ";
         OS << varName << " instanceof ";
-        OS << getType(isPattern->getCastTypeLoc().getType());
+        OS << getTypeName(isPattern->getCastTypeLoc().getType());
       }
     }
     return !first;
@@ -2987,7 +3081,7 @@ public:
     PrintWithColorRAII(OS, TypeReprColor) << "'";
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    OS << getType(GetTypeOfExpr(E));
+    OS << getTypeName(GetTypeOfExpr(E));
   }
 
   void visitOtherConstructorDeclRefExpr(OtherConstructorDeclRefExpr *E) {
@@ -3068,7 +3162,7 @@ public:
     
     if(rString.find("#L") == std::string::npos) rString = "#L." + rString;
     
-    OS << std::regex_replace(rString, std::regex("\\^?#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
+    OS << std::regex_replace(rString, std::regex("#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
     printCommon(E, "dynamic_member_ref_expr");
@@ -3217,10 +3311,10 @@ public:
       }
     }
     
-    string = std::regex_replace(string, std::regex("\\^?#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
+    string = std::regex_replace(string, std::regex("#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
     
     functionArgsCall = skipWrapperExpressions(E->getIndex());
-    string = std::regex_replace(string, std::regex("\\^?#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
+    string = std::regex_replace(string, std::regex("#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
     
     OS << string;
   }
@@ -3315,8 +3409,8 @@ public:
       if(auto *declRefExpr = dyn_cast<DeclRefExpr>(dotSyntaxCallExpr->getFn())) {
         //an operator closure
         string = string.substr(string.find("#PRENOL") + 7/*"#PRENOL".count()*/);
-        string = std::regex_replace(string, std::regex("\\^?#A0"), "a");
-        string = std::regex_replace(string, std::regex("\\^?#A1"), "b");
+        string = std::regex_replace(string, std::regex("#A0"), "a");
+        string = std::regex_replace(string, std::regex("#A1"), "b");
         string = "(a, b) => " + string;
       }
     }
@@ -3663,10 +3757,9 @@ public:
       lString = dumpToStr(lExpr);
     }
     
-    bool isAss = false, isAssSkipInOutExpr = false;
+    bool isAss = false;
     if(lString.find("#ISASS") != std::string::npos) {
       isAss = true;
-      isAssSkipInOutExpr = lString.find("^#A0") != std::string::npos;
       lString = std::regex_replace(lString, std::regex("#ISASS"), "");
     }
     
@@ -3675,35 +3768,20 @@ public:
     }
     
     std::string lrString;
-    if(std::regex_search(lString, std::regex("#A[0-9]"))) {
-      //if the replacement references specific arguments e.g. #A0 #A1
-      //we can't accept the right-hand side as a single string; we need an array of arguments
-      TupleExpr *tuple = (TupleExpr*)rExpr;
-      lrString = lString;
-      for (unsigned i = 0, e = tuple->getNumElements(); i != e; ++i) {
-        std::string replacement = dumpToStr(lrString.find("^#A" + std::to_string(i)) != std::string::npos ? skipInOutExpr(tuple->getElement(i)) : tuple->getElement(i));
-        lrString = std::regex_replace(lrString, std::regex("\\^?#A" + std::to_string(i)), regex_escape(replacement));
-      }
-      if(isAss) {
-        lrString = handleLAssignment(isAssSkipInOutExpr ? skipInOutExpr(tuple->getElement(0)) : tuple->getElement(0), lrString);
-      }
+    functionArgsCall = skipWrapperExpressions(rExpr);
+    std::string rString = dumpToStr(rExpr);
+    //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
+    //we replace the #L with left-hand side there
+    if(rString.find("#L") != std::string::npos) {
+      lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
     }
+    else if(rString.find("#NOL") != std::string::npos) {
+      lrString = std::regex_replace(rString, std::regex("#NOL"), "");
+    }
+    //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
     else {
-      functionArgsCall = skipWrapperExpressions(rExpr);
-      std::string rString = dumpToStr(rExpr);
-      //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
-      //we replace the #L with left-hand side there
-      if(rString.find("#L") != std::string::npos) {
-        lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
-      }
-      else if(rString.find("#NOL") != std::string::npos) {
-        lrString = std::regex_replace(rString, std::regex("#NOL"), "");
-      }
-      //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
-      else {
-        if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
-        lrString = std::regex_replace(lString, std::regex(rName), regex_escape(rString));
-      }
+      if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
+      lrString = std::regex_replace(lString, std::regex(rName), regex_escape(rString));
     }
     
     OS << lrString;
