@@ -94,10 +94,6 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).ClosedRange.contains(_:Bound)", "return #AA >= this.lowerBound && #AA <= this.upperBound"},
   {"Swift.(file).Sequence.makeIterator()", "return new SwiftIterator((current) => this.contains(current + this.lowerBound) ? current + this.lowerBound : null)"},
   {"Swift.(file).FloatingPoint.init(_:Int)", "return #AA"},
-  {"Swift.(file).Int.&>>=infix(_:Int,_:Int)", "/*#A0.set(#A0.get() &>>= #A1)*/"},
-  {"Swift.(file).Int.&<<=infix(_:Int,_:Int)", "/*#A0.set(#A0.get() &<<= #A1)*/"},
-  {"Swift.(file).Int.&<<infix(_:Int,_:Int)", "/*return #A0 &<< #A1*/"},
-  {"Swift.(file).Int.&>>infix(_:Int,_:Int)", "/*return #A0 &>> #A1*/"},
   {"Swift.(file).Array.init()", "return []"},
   {"Swift.(file).Dictionary.init()", "return new Map()"},
   {"Swift.(file).Set.init()", "return new Set()"},
@@ -439,6 +435,58 @@ TempValInfo getTempVal(std::string init = "") {
   std::string expr = "(" + name + " = " + init + ")";
   tempValI++;
   return TempValInfo{name, expr};
+}
+
+Type unwrapType(Type T) {
+  while(true) {
+    if(!T) break;
+    if(auto TT = dyn_cast<LValueType>(T.getPointer())) {
+      T = TT->getObjectType();
+    }
+    else if(auto TT = dyn_cast<InOutType>(T.getPointer())) {
+      T = TT->getObjectType();
+    }
+    else if(auto TT = dyn_cast<AnyMetatypeType>(T.getPointer())) {
+      T = TT->getInstanceType();
+    }
+    else if(auto TT = dyn_cast<SyntaxSugarType>(T.getPointer())) {
+      T = TT->getSinglyDesugaredType();
+    }
+    else if(auto TT = dyn_cast<ParenType>(T.getPointer())) {
+      T = TT->getUnderlyingType()->getInOutObjectType();
+    }
+    else break;
+  }
+  return T;
+}
+struct AllMembers{ std::list<Decl*> members; std::list<Type> inherited; Decl* lastNonExtensionMember; std::list<NominalTypeDecl*> evaluatedInherited; };
+void getAllMembers2(NominalTypeDecl *D, AllMembers &result, bool recursive) {
+  std::list<Type> inherited;
+  for (auto *M : D->getMembers()) result.members.push_back(M);
+  for (auto I : D->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
+  result.lastNonExtensionMember = result.members.empty() ? nullptr : result.members.back();
+  for (auto E : D->getExtensions()) {
+    for (auto *M : E->getMembers()) result.members.push_back(M);
+    for (auto I : E->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
+  }
+  if(recursive) {
+    for(auto T : inherited) {
+      if(auto T2 = unwrapType(T)) {
+        if(auto *nominalDecl = T->getNominalOrBoundGenericNominal()) {
+          if(std::find(result.evaluatedInherited.begin(), result.evaluatedInherited.end(), nominalDecl) != result.evaluatedInherited.end()) continue;
+          result.evaluatedInherited.push_back(nominalDecl);
+          getAllMembers2(nominalDecl, result, recursive);
+        }
+        //else std::cout << "\n" << getTypeName(T);
+      }
+      //else std::cout << "\n" << getTypeName(T);
+    }
+  }
+}
+AllMembers getAllMembers(NominalTypeDecl *D, bool recursive) {
+  AllMembers result;
+  getAllMembers2(D, result, recursive);
+  return result;
 }
 
 std::unordered_map<OpaqueValueExpr*, Expr*> opaqueValueReplacements;
@@ -1194,31 +1242,83 @@ namespace {
       PrintWithColorRAII(OS, ASTNodeColor) << "source_file ";
       PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';*/
       
+      std::error_code OutErrorInfoOrder;
+      llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + "inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
+      
       if(LIB_GENERATE_MODE) {
         SmallVector<Decl *, 64> topLevelDecls;
         SF.getASTContext().getStdlibModule()->getTopLevelDecls(topLevelDecls);
+        std::unordered_map<NominalTypeDecl*, std::vector<std::string>> allMembers;
+        std::list<NominalTypeDecl*> orderedList;
+        std::list<NominalTypeDecl*> unorderedList;
+
         for (Decl *D : topLevelDecls) {
-          std::string outName = "_";
+          std::string outName;
+          bool isExtension = false;
           if(auto *VD = dyn_cast<ValueDecl>(D)) {
-            outName = getName(VD, 0);
+            outName = getName(VD);
+            if(auto *NVD = dyn_cast<NominalTypeDecl>(VD)) {
+              std::vector<std::string> allMembersStr;
+              for(auto member : getAllMembers(NVD, true).inherited) {
+                std::string name = getTypeName(member);
+                if(name == "AnyObject" || name == "Unicode.Encoding") continue;
+                if(name == "Codable") {
+                  allMembersStr.push_back("Decodable");
+                  allMembersStr.push_back("Encodable");
+                }
+                else {
+                  allMembersStr.push_back(name);
+                }
+              }
+              allMembers[NVD] = allMembersStr;
+              unorderedList.push_back(NVD);
+            }
+            else orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
           }
           else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
             outName = getTypeName(ED->getExtendedType());
+            isExtension = true;
           }
+          else continue;
           outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
           std::error_code OutErrorInfo;
-          llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, llvm::sys::fs::F_Append);
+          llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
           PrintDecl(outFile, Indent + 2).visit(D);
           outFile << "\n\n";
           outFile.close();
         }
         
-        std::error_code OutErrorInfo;
-        llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + "libFunctionOverloadedCounts.txt"), OutErrorInfo, llvm::sys::fs::F_None);
-        for(auto pair: libFunctionOverloadedCounts) {
-          outFile << "{\"" << pair.first << "\", 0},";
+        while(!unorderedList.empty()) {
+          auto i = unorderedList.begin();
+          while (i != unorderedList.end()) {
+            auto *NVD = *i;
+            //std::cout << '\n' << getName(NVD);
+            bool allPresent = true;
+            for(auto inherited : allMembers[NVD]) {
+              bool inheritedPresent = false;
+              for(auto ordered : orderedList) {
+                if(getName(ordered) == inherited) {inheritedPresent = true;break;}
+              }
+              if(!inheritedPresent) {allPresent = false;break;}
+            }
+            if(allPresent) {
+              orderedList.push_back(NVD);
+              unorderedList.erase(i++);
+            }
+            else ++i;
+          }
         }
-        outFile.close();
+        for (NominalTypeDecl *D : orderedList) {
+          orderFile << "'" << std::regex_replace(getName(D), std::regex("MIO_Mixin_"), "") << "',";
+        }
+        
+        std::error_code OutErrorInfoOverloadedCounts;
+        llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + "libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
+        for(auto pair: libFunctionOverloadedCounts) {
+          overloadedCountsFile << "{\"" << pair.first << "\", 0},";
+        }
+        overloadedCountsFile.close();
+        orderFile.close();
       }
       else {
         for (Decl *D : SF.Decls) {
@@ -1325,18 +1425,13 @@ namespace {
     
     void visitAnyStructDecl(std::string kind, NominalTypeDecl *D) {
       
-      std::list<Decl*> members;
-      std::list<TypeLoc> inherited;
+      auto all = getAllMembers(D, false);
+      std::list<Decl*> members = all.members;
+      std::list<Type> inherited = all.inherited;
       std::list<std::string> implementedProtocols;
-      for (auto *M : D->getMembers()) members.push_back(M);
-      for (auto I : D->getInherited()) inherited.push_back(I);
-      Decl* lastNonExtensionMember = members.empty() ? nullptr : members.back();
-      for (auto E : D->getExtensions()) {
-        for (auto *M : E->getMembers()) members.push_back(M);
-        for (auto I : E->getInherited()) inherited.push_back(I);
-      }
+      Decl* lastNonExtensionMember = all.lastNonExtensionMember;
       
-      std::string name = getName(D, 0);
+      std::string name = getName(D);
       std::string nestedName = getTypeName(D->getDeclaredType());
       
       std::string definition = kind == "protocol" ? "interface" : "class";
@@ -1365,7 +1460,7 @@ namespace {
       bool wasClass = false, wasProtocol = false;
       if(!inherited.empty() && kind != "enum") {
         for(auto Super : inherited) {
-          bool isProtocol = Super.getType()->isExistentialType();
+          bool isProtocol = Super->isExistentialType();
           if ((isProtocol ? wasProtocol : wasClass)) {
             OS << ", ";
           }
@@ -1377,8 +1472,8 @@ namespace {
             OS << " extends ";
             wasClass = true;
           }
-          OS << getTypeName(Super.getType());
-          if(isProtocol) implementedProtocols.push_back(getTypeName(Super.getType()));
+          OS << getTypeName(Super);
+          if(isProtocol) implementedProtocols.push_back(getTypeName(Super));
         }
       }
       
@@ -1399,7 +1494,7 @@ namespace {
       for (Decl *subD : members) {
         OS << '\n';
         printRec(subD);
-        if(kind == "protocol" && subD == lastNonExtensionMember && subD != members.back()) {
+        if(!protocolImplementation && kind == "protocol" && (subD == lastNonExtensionMember || !lastNonExtensionMember) && subD != members.back()) {
           OS << "\n}\n";
           printAnyStructSignature("class", name + "$implementation", D);
           OS << "{";
@@ -1416,7 +1511,12 @@ namespace {
       
       if(kind != "protocol" || protocolImplementation) {
         for (auto implementedProtocol : implementedProtocols) {
-          afterStruct += "\nif(typeof " + implementedProtocol + "$implementation != 'undefined') _mixin(" + nestedName + (protocolImplementation ? "$implementation" : "") + ", " + implementedProtocol + "$implementation, false)";
+          size_t dotPos = 0;
+          afterStruct += "\nif(";
+          while((dotPos = implementedProtocol.find(".", dotPos + 1)) != std::string::npos) {
+            afterStruct += "typeof " + implementedProtocol.substr(0, dotPos) + " != 'undefined' && ";
+          }
+          afterStruct += "typeof " + implementedProtocol + "$implementation != 'undefined') _mixin(" + nestedName + (protocolImplementation ? "$implementation" : "") + ", " + implementedProtocol + "$implementation, false)";
         }
       }
       
@@ -1967,6 +2067,10 @@ namespace {
         }
         else {
           result.str = "return #A0 " + userFacingName + " #A1";
+        }
+        //js doesn't understand operators starting with &/.
+        if((userFacingName[0] == '&' && userFacingName != "&&") || userFacingName == "~=" || userFacingName[0] == '.') {
+          result.str = "/*" + result.str + "*/";
         }
       }
       else {
@@ -4824,7 +4928,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitParenType(ParenType *T, StringRef label) {
@@ -4871,7 +4975,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitStructType(StructType *T, StringRef label) {
@@ -4884,7 +4988,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitClassType(ClassType *T, StringRef label) {
@@ -4897,7 +5001,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitProtocolType(ProtocolType *T, StringRef label) {
@@ -4910,7 +5014,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitMetatypeType(MetatypeType *T, StringRef label) {
@@ -5158,7 +5262,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitBoundGenericClassType(BoundGenericClassType *T, StringRef label) {
@@ -5173,7 +5277,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitBoundGenericStructType(BoundGenericStructType *T,
@@ -5189,7 +5293,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitBoundGenericEnumType(BoundGenericEnumType *T, StringRef label) {
@@ -5204,7 +5308,7 @@ namespace {
         printRec("parent", T->getParent());
         OS << ".";
       }
-      OS << getName(T->getDecl(), 0);
+      OS << getName(T->getDecl());
     }
 
     void visitTypeVariableType(TypeVariableType *T, StringRef label) {
