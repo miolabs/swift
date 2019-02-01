@@ -45,7 +45,9 @@
 using namespace swift;
 
 const bool LIB_GENERATE_MODE = false;
-const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/foundation/";
+const bool GENERATE_STD_LIB = false;
+const bool GENERATE_IMPORTED_MODULE = false;
+const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/XCTest/";
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
@@ -301,6 +303,9 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
   return baseStr;
 }
 
+bool isNative(std::string uniqueIdentifier) {
+  return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0;
+}
 std::string getFunctionName(ValueDecl *D) {
   std::string uniqueIdentifier = getMemberIdentifier(D);
   std::string userFacingName = D->getBaseName().userFacingName();
@@ -324,7 +329,7 @@ std::string getFunctionName(ValueDecl *D) {
     overloadIdentifier += ".";*/
     overloadIdentifier += userFacingName;
 
-    if(uniqueIdentifier.find("Swift.(file).") != 0) {
+    if(!isNative(uniqueIdentifier)) {
       if(functionOverloadedCounts.count(overloadIdentifier)) {
         functionOverloadedCounts[overloadIdentifier] += 1;
         functionUniqueNames[uniqueIdentifier] += std::to_string(functionOverloadedCounts[overloadIdentifier]);
@@ -1056,6 +1061,10 @@ namespace {
                  },
                  [&] { OS << '.'; });
       OS << "')";
+      
+      if(GENERATE_IMPORTED_MODULE) {
+        generateLibForModule(ID->getModule());
+      }
     }
 
     void visitExtensionDecl(ExtensionDecl *ED) {
@@ -1235,6 +1244,97 @@ namespace {
           OS << " non-resilient";
       }
     }
+    
+    void generateLibForModule(ModuleDecl *MD) {
+      
+      //SmallVector<Decl *, 64> topLevelDecls;
+      //MD->getTopLevelDecls(topLevelDecls);
+      SmallVector<Decl *, 64> displayDecls;
+      MD->getDisplayDecls(displayDecls);
+      //SmallVector<TypeDecl *, 64> localTypeDecls;
+      //MD->getLocalTypeDecls(localTypeDecls);
+
+
+      std::error_code OutErrorInfoOrder;
+      llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + "inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
+      
+      //SmallVector<Decl *, 64> topLevelDecls;
+      //MD->getTopLevelDecls(topLevelDecls);
+      //SmallVectorImpl<swift::TypeDecl *>
+      //MD->getLocalTypeDecls(topLevelDecls);
+      //MD->getDisplayDecls(topLevelDecls);
+      std::unordered_map<NominalTypeDecl*, std::vector<std::string>> allMembers;
+      std::list<NominalTypeDecl*> orderedList;
+      std::list<NominalTypeDecl*> unorderedList;
+      
+      for (Decl *D : displayDecls) {
+        std::string outName;
+        bool isExtension = false;
+        if(auto *VD = dyn_cast<ValueDecl>(D)) {
+          outName = getName(VD);
+          if(auto *NVD = dyn_cast<NominalTypeDecl>(VD)) {
+            std::vector<std::string> allMembersStr;
+            for(auto member : getAllMembers(NVD, true).inherited) {
+              std::string name = getTypeName(member);
+              //TODO understand protocol compositions
+              if(name == "Codable") {
+                allMembersStr.push_back("Decodable");
+                allMembersStr.push_back("Encodable");
+              }
+              else {
+                allMembersStr.push_back(name);
+              }
+            }
+            allMembers[NVD] = allMembersStr;
+            unorderedList.push_back(NVD);
+          }
+          else orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
+        }
+        else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
+          outName = getTypeName(ED->getExtendedType());
+          isExtension = true;
+        }
+        else continue;
+        outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
+        std::error_code OutErrorInfo;
+        llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
+        PrintDecl(outFile, Indent + 2).visit(D);
+        outFile << "\n\n";
+        outFile.close();
+      }
+      
+      while(!unorderedList.empty()) {
+        auto i = unorderedList.begin();
+        while (i != unorderedList.end()) {
+          auto *NVD = *i;
+          std::cout << '\n' << getName(NVD);
+          bool allPresent = true;
+          for(auto inherited : allMembers[NVD]) {
+            bool inheritedPresent = true;
+            for(auto unordered : unorderedList) {
+              if(getName(unordered) == inherited) {inheritedPresent = false;break;}
+            }
+            if(!inheritedPresent) {allPresent = false;break;}
+          }
+          if(allPresent) {
+            orderedList.push_back(NVD);
+            unorderedList.erase(i++);
+          }
+          else ++i;
+        }
+      }
+      for (NominalTypeDecl *D : orderedList) {
+        orderFile << "'" << std::regex_replace(getName(D), std::regex("MIO_Mixin_"), "") << "',";
+      }
+      
+      std::error_code OutErrorInfoOverloadedCounts;
+      llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + "libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
+      for(auto pair: libFunctionOverloadedCounts) {
+        overloadedCountsFile << "{\"" << pair.first << "\", 0},";
+      }
+      overloadedCountsFile.close();
+      orderFile.close();
+    }
 
     void visitSourceFile(const SourceFile &SF) {
       /*OS.indent(Indent);
@@ -1242,83 +1342,8 @@ namespace {
       PrintWithColorRAII(OS, ASTNodeColor) << "source_file ";
       PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';*/
       
-      std::error_code OutErrorInfoOrder;
-      llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + "inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
-      
-      if(LIB_GENERATE_MODE) {
-        SmallVector<Decl *, 64> topLevelDecls;
-        SF.getASTContext().getStdlibModule()->getTopLevelDecls(topLevelDecls);
-        std::unordered_map<NominalTypeDecl*, std::vector<std::string>> allMembers;
-        std::list<NominalTypeDecl*> orderedList;
-        std::list<NominalTypeDecl*> unorderedList;
-
-        for (Decl *D : topLevelDecls) {
-          std::string outName;
-          bool isExtension = false;
-          if(auto *VD = dyn_cast<ValueDecl>(D)) {
-            outName = getName(VD);
-            if(auto *NVD = dyn_cast<NominalTypeDecl>(VD)) {
-              std::vector<std::string> allMembersStr;
-              for(auto member : getAllMembers(NVD, true).inherited) {
-                std::string name = getTypeName(member);
-                if(name == "AnyObject" || name == "Unicode.Encoding") continue;
-                if(name == "Codable") {
-                  allMembersStr.push_back("Decodable");
-                  allMembersStr.push_back("Encodable");
-                }
-                else {
-                  allMembersStr.push_back(name);
-                }
-              }
-              allMembers[NVD] = allMembersStr;
-              unorderedList.push_back(NVD);
-            }
-            else orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
-          }
-          else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
-            outName = getTypeName(ED->getExtendedType());
-            isExtension = true;
-          }
-          else continue;
-          outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
-          std::error_code OutErrorInfo;
-          llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
-          PrintDecl(outFile, Indent + 2).visit(D);
-          outFile << "\n\n";
-          outFile.close();
-        }
-        
-        while(!unorderedList.empty()) {
-          auto i = unorderedList.begin();
-          while (i != unorderedList.end()) {
-            auto *NVD = *i;
-            //std::cout << '\n' << getName(NVD);
-            bool allPresent = true;
-            for(auto inherited : allMembers[NVD]) {
-              bool inheritedPresent = false;
-              for(auto ordered : orderedList) {
-                if(getName(ordered) == inherited) {inheritedPresent = true;break;}
-              }
-              if(!inheritedPresent) {allPresent = false;break;}
-            }
-            if(allPresent) {
-              orderedList.push_back(NVD);
-              unorderedList.erase(i++);
-            }
-            else ++i;
-          }
-        }
-        for (NominalTypeDecl *D : orderedList) {
-          orderFile << "'" << std::regex_replace(getName(D), std::regex("MIO_Mixin_"), "") << "',";
-        }
-        
-        std::error_code OutErrorInfoOverloadedCounts;
-        llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + "libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
-        for(auto pair: libFunctionOverloadedCounts) {
-          overloadedCountsFile << "{\"" << pair.first << "\", 0},";
-        }
-        overloadedCountsFile.close();
-        orderFile.close();
+      if(GENERATE_STD_LIB) {
+        generateLibForModule(SF.getASTContext().getStdlibModule());
       }
       else {
         for (Decl *D : SF.Decls) {
@@ -3220,7 +3245,11 @@ public:
     else
       PrintWithColorRAII(OS, LiteralValueColor) << E->getValue();
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    OS << E->getValue();
+    Type T = GetTypeOfExpr(E);
+    if (T.isNull() || !T->is<BuiltinIntegerType>())
+      OS << (E->isNegative() ? "-" : "") << E->getDigitsText();
+    else
+      OS << E->getValue();
   }
   void visitFloatLiteralExpr(FloatLiteralExpr *E) {
     /*printCommon(E, "float_literal_expr");
@@ -4169,7 +4198,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     auto tempVal = getTempVal(dumpToStr(E->getSubExpr()));
-    std::string condition = "(" + tempVal.expr + " != null)";
+    std::string condition = tempVal.expr + " != null";
     
     optionalCondition[optionalCondition.size() - 1] = optionalCondition.back().length() ? optionalCondition.back() + " && " + condition : condition;
     
