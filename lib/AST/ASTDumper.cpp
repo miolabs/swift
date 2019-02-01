@@ -77,8 +77,8 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Sequence.enumerated()", "return this.map((v, i) => [i, v])"},
   {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "return this.reduce(#A1, #A0)"},
   {"Swift.(file).MutableCollection.sort(by:(Self.Element, Self.Element) throws -> Bool)", "return this.sort((a, b) => areInIncreasingOrder(a, b) ? -1 : 1)"},
-  {"Swift.(file).??infix(_:T?,_:() throws -> T)", "return #A0 != null ? #A0 : #A1"},
-  {"Swift.(file).??infix(_:T?,_:() throws -> T?)", "return #A0 != null ? #A0 : #A1"},
+  {"Swift.(file).??infix(_:T?,_:() throws -> T)", "return #A0 != null ? #A0 : #A1()"},
+  {"Swift.(file).??infix(_:T?,_:() throws -> T?)", "return #A0 != null ? #A0 : #A1()"},
   {"Swift.(file).~=infix(_:T,_:T)", "return #A0 == #A1"},
   {"Swift.(file).Comparable...<infix(_:Self,_:Self)", "return _create(Range, 'initUncheckedBounds', [minimum, maximum])"},
   {"Swift.(file).Comparable....infix(_:Self,_:Self)", "return _create(ClosedRange, 'initUncheckedBounds', [minimum, maximum])"},
@@ -102,7 +102,20 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Set.init(_:Source)", "return new Set(#AA)"},
   {"Swift.(file).Array.init()", "return []"},
   {"Swift.(file).BinaryInteger./infix(_:Self,_:Self)", "return (#A0 / #A1) | 0"},
-  {"Swift.(file).BinaryInteger./=infix(_:Self,_:Self)", "lhs$inout.set((lhs$inout.get() / rhs) | 0)"}
+  {"Swift.(file).BinaryInteger./=infix(_:Self,_:Self)", "lhs$inout.set((lhs$inout.get() / rhs) | 0)"},
+  {"XCTest.(file).XCTAssert(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(!expression()) throw message()"},
+  {"XCTest.(file).XCTAssertEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(expression1() != expression2()) throw message()"},
+  {"XCTest.(file).XCTAssertFalse(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression()) throw message()"},
+  {"XCTest.(file).XCTAssertGreaterThan(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!(expression1() > expression2())) throw message()"},
+  {"XCTest.(file).XCTAssertGreaterThanOrEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!(expression1() >= expression2())) throw message()"},
+  {"XCTest.(file).XCTAssertLessThan(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!(expression1() < expression2())) throw message()"},
+  {"XCTest.(file).XCTAssertLessThanOrEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!(expression1() <= expression2())) throw message()"},
+  {"XCTest.(file).XCTAssertNil(_:() throws -> Any?,_:() -> String,file:StaticString,line:UInt)", "if(expression() != undefined) throw message()"},
+  {"XCTest.(file).XCTAssertEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(expression1() == expression2()) throw message()"},
+  {"XCTest.(file).XCTAssertNoThrow(_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "try{expression()}catch(){throw message()}"},
+  {"XCTest.(file).XCTAssertNotNil(_:() throws -> Any?,_:() -> String,file:StaticString,line:UInt)", "if(expression() == undefined) throw message()"},
+  {"XCTest.(file).XCTAssertThrowsError(_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "try{expression()}catch(){return}throw message()"},
+  {"XCTest.(file).XCTAssertTrue(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression() != true) throw message()"}
 };
 
 const std::unordered_map<std::string, std::string> LIB_MIXINS = {
@@ -2063,15 +2076,29 @@ namespace {
       bool isAssignment = false;
       std::string userFacingName = FD->getBaseName().userFacingName();
       LibGeneratedFuncBody result;
+      
+      auto *params = FD->getParameters();
+      std::vector<std::string> paramRepr;
+      if(params) {
+        int i = 0;
+        for (auto P : *params) {
+          std::string parameterStr;
+          llvm::raw_string_ostream parameterStream(parameterStr);
+          printParameter(P, parameterStream);
+          paramRepr.push_back(parameterStream.str() + (P->isAutoClosure() ? "()" : ""));
+          i++;
+        }
+      }
+
       if(auto *accessorDecl = dyn_cast<AccessorDecl>(FD)) {
         if(getAccessorKindString(accessorDecl->getAccessorKind()) == "set") {
           //subscript set
           isAssignment = true;
-          result.str = "this[#A1] = #A0";
+          result.str = "this[" + paramRepr[1] + "] = " + paramRepr[0];
         }
         else {
           //subscript get
-          result.str = "return this[#A0]";
+          result.str = "return this[" + paramRepr[0] + "]";
         }
       }
       else if(auto *constructorDecl = dyn_cast<ConstructorDecl>(FD)) {
@@ -2082,16 +2109,16 @@ namespace {
         //operator
         std::string operatorFix = getOperatorFix(FD);
         if(std::find(std::begin(ASSIGNMENT_OPERATORS), std::end(ASSIGNMENT_OPERATORS), userFacingName) != std::end(ASSIGNMENT_OPERATORS)) {
-          result.str = "#A0.set(#A0.get() " + userFacingName.substr(0, userFacingName.length() - 1) + " #A1)";
+          result.str = paramRepr[0] + ".set(" + paramRepr[0] + ".get() " + userFacingName.substr(0, userFacingName.length() - 1) + " " + paramRepr[1] + ")";
         }
         else if(operatorFix == "prefix") {
-          result.str = "return " + userFacingName + "#AA";
+          result.str = "return " + userFacingName + paramRepr[0];
         }
         else if(operatorFix == "postfix") {
-          result.str = "return #AA" + userFacingName;
+          result.str = "return " + paramRepr[0] + userFacingName;
         }
         else {
-          result.str = "return #A0 " + userFacingName + " #A1";
+          result.str = "return " + paramRepr[0] + " " + userFacingName + " " + paramRepr[1];
         }
         //js doesn't understand operators starting with &/.
         if((userFacingName[0] == '&' && userFacingName != "&&") || userFacingName == "~=" || userFacingName[0] == '.') {
@@ -2109,23 +2136,8 @@ namespace {
         result.shouldBeCommentedOut = false;
       }
       
-      auto *params = FD->getParameters();
-      if(result.str.find("#AA") != std::string::npos) {
-        result.str = std::regex_replace(result.str, std::regex("#AA"), regex_escape(printFuncParams(params)));
-      }
-      else {
-        if(params) {
-          int i = 0;
-          for (auto P : *params) {
-            std::string parameterStr;
-            llvm::raw_string_ostream parameterStream(parameterStr);
-            printParameter(P, parameterStream);
-            result.str = std::regex_replace(result.str, std::regex("#A" + std::to_string(i)), regex_escape(parameterStream.str()));
-            i++;
-          }
-        }
-      }
-
+      result.str = std::regex_replace(result.str, std::regex("#AA"), regex_escape(printFuncParams(params)));
+      
       return result;
     }
 
@@ -3978,6 +3990,7 @@ public:
     printRec(E->getSingleExpressionBody());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
+    OS << "() => ";
     printRec(E->getSingleExpressionBody());
   }
 
