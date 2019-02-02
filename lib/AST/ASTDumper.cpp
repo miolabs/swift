@@ -47,7 +47,7 @@ using namespace swift;
 const bool LIB_GENERATE_MODE = false;
 const bool GENERATE_STD_LIB = false;
 const bool GENERATE_IMPORTED_MODULE = false;
-const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/XCTest/";
+const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/";
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
@@ -63,7 +63,7 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Array.subscript(_:Int)#ASS", "if(#A0 == null) this.splice(#A1, 1)\nelse this[#A1]=#A0"},
   {"Swift.(file).Array.count", "return this.length"},
   {"Swift.(file).Array.+infix(_:Array<Element>,_:Array<Element>)", "return #A0.concat(#A1)"},
-  {"Swift.(file).Array.+=infix(_:Array<Element>,_:Array<Element>)", "#A0.get().appendContentsOf(#A1)"},
+  {"Swift.(file).Array.+=infix(_:Array<Element>,_:Array<Element>)", "#A0.get().appendContentsOf(null, #A1)"},
   {"Swift.(file).Array.append(_:Element)", "this.push(#AA)"},
   {"Swift.(file).Array.append(contentsOf:S)", "this.push.apply(this, #A0)"},
   {"Swift.(file).Array.insert(_:Element,at:Int)", "this.splice(#A1, 0, #A0)"},
@@ -75,26 +75,28 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).BidirectionalCollection.joined(separator:String)", "return this.join(#AA)"},
   {"Swift.(file).Collection.makeIterator()", "return new SwiftIterator((current) => this[current])"},
   {"Swift.(file).Sequence.enumerated()", "return this.map((v, i) => [i, v])"},
-  {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "return this.reduce(#A1, #A0)"},
-  {"Swift.(file).MutableCollection.sort(by:(Self.Element, Self.Element) throws -> Bool)", "return this.sort((a, b) => areInIncreasingOrder(a, b) ? -1 : 1)"},
+  {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "return this.reduce(#A1.bind(null, null), #A0)"},
+  {"Swift.(file)._ArrayProtocol.filter(_:(Self.Element) throws -> Bool)", "return this.filter(#AA.bind(null, null))"},
+  {"Swift.(file).Collection.map(_:(Self.Element) throws -> T)", "return this.map(#AA.bind(null, null))"},
+  {"Swift.(file).MutableCollection.sort(by:(Self.Element, Self.Element) throws -> Bool)", "return this.sort((a, b) => areInIncreasingOrder(null, a, b) ? -1 : 1)"},
   {"Swift.(file).??infix(_:T?,_:() throws -> T)", "return #A0 != null ? #A0 : #A1()"},
   {"Swift.(file).??infix(_:T?,_:() throws -> T?)", "return #A0 != null ? #A0 : #A1()"},
   {"Swift.(file).~=infix(_:T,_:T)", "return #A0 == #A1"},
-  {"Swift.(file).Comparable...<infix(_:Self,_:Self)", "return _create(Range, 'initUncheckedBounds', [minimum, maximum])"},
-  {"Swift.(file).Comparable....infix(_:Self,_:Self)", "return _create(ClosedRange, 'initUncheckedBounds', [minimum, maximum])"},
-  {"Swift.(file).Comparable...<prefix(_:Self)", "return _create(PartialRangeUpTo, 'init', #AA)"},
-  {"Swift.(file).Comparable....prefix(_:Self)", "return _create(PartialRangeThrough, 'init', #AA)"},
-  {"Swift.(file).Comparable....postfix(_:Self)", "return _create(PartialRangeFrom, 'init', #AA)"},
+  {"Swift.(file).Comparable...<infix(_:Self,_:Self)", "return _create(Range, 'initUncheckedBounds', null, [minimum, maximum])"},
+  {"Swift.(file).Comparable....infix(_:Self,_:Self)", "return _create(ClosedRange, 'initUncheckedBounds', null, [minimum, maximum])"},
+  {"Swift.(file).Comparable...<prefix(_:Self)", "return _create(PartialRangeUpTo, 'init', null, #AA)"},
+  {"Swift.(file).Comparable....prefix(_:Self)", "return _create(PartialRangeThrough, 'init', null, #AA)"},
+  {"Swift.(file).Comparable....postfix(_:Self)", "return _create(PartialRangeFrom, 'init', null, #AA)"},
   {"Swift.(file).Range.init(uncheckedBounds:(lower: Bound, upper: Bound))", "this.lowerBound$internal = #AA[0]\nthis.upperBound$internal = #AA[1]"},
   {"Swift.(file).ClosedRange.init(uncheckedBounds:(lower: Bound, upper: Bound))", "this.lowerBound$internal = #AA[0]\nthis.upperBound$internal = #AA[1]"},
   {"Swift.(file).Range.lowerBound", "return this.lowerBound$internal"},
   {"Swift.(file).Range.upperBound", "return this.upperBound$internal"},
   {"Swift.(file).ClosedRange.lowerBound", "return this.lowerBound$internal"},
   {"Swift.(file).ClosedRange.upperBound", "return this.upperBound$internal"},
-  {"Swift.(file).RangeExpression.~=infix(_:Self,_:Self.Bound)", "return #A0.contains(#A1)"},
+  {"Swift.(file).RangeExpression.~=infix(_:Self,_:Self.Bound)", "return #A0.contains(null, #A1)"},
   {"Swift.(file).Range.contains(_:Bound)", "return #AA >= this.lowerBound && #AA < this.upperBound"},
   {"Swift.(file).ClosedRange.contains(_:Bound)", "return #AA >= this.lowerBound && #AA <= this.upperBound"},
-  {"Swift.(file).Sequence.makeIterator()", "return new SwiftIterator((current) => this.contains(current + this.lowerBound) ? current + this.lowerBound : null)"},
+  {"Swift.(file).Sequence.makeIterator()", "return new SwiftIterator((current) => this.contains(null, current + this.lowerBound) ? current + this.lowerBound : null)"},
   {"Swift.(file).FloatingPoint.init(_:Int)", "return #AA"},
   {"Swift.(file).Array.init()", "return []"},
   {"Swift.(file).Dictionary.init()", "return new Map()"},
@@ -129,7 +131,7 @@ const std::unordered_map<std::string, std::string> LIB_MIXINS = {
 };
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
-  {"Swift.(file).Dictionary", "(obj){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
+  {"Swift.(file).Dictionary", "($info, obj){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
 };
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
@@ -148,6 +150,8 @@ std::vector<std::string> optionalCondition = {};
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {
   {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "reduceInvertedArguments"},
+  {"Swift.(file)._ArrayProtocol.filter(_:(Self.Element) throws -> Bool)", "filterWithInfo"},
+  {"Swift.(file).Collection.map(_:(Self.Element) throws -> T)", "mapWithInfo"},
   {"Swift.(file)._ArrayProtocol.init(_:Self._Buffer)", "initBuffer"},
   {"Swift.(file).RangeReplaceableCollection.init(_:S)", "initBuffer"},
   {"Swift.(file).RandomAccessCollection.subscript(_:Range<Self.Index>)", "subcriptRange"},
@@ -1266,10 +1270,12 @@ namespace {
       MD->getDisplayDecls(displayDecls);
       //SmallVector<TypeDecl *, 64> localTypeDecls;
       //MD->getLocalTypeDecls(localTypeDecls);
+      
+      std::cout << "\n" << MD->getName().get();
 
 
       std::error_code OutErrorInfoOrder;
-      llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + "inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
+      llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
       
       //SmallVector<Decl *, 64> topLevelDecls;
       //MD->getTopLevelDecls(topLevelDecls);
@@ -1310,7 +1316,7 @@ namespace {
         else continue;
         outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
         std::error_code OutErrorInfo;
-        llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
+        llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/" + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
         PrintDecl(outFile, Indent + 2).visit(D);
         outFile << "\n\n";
         outFile.close();
@@ -1341,7 +1347,7 @@ namespace {
       }
       
       std::error_code OutErrorInfoOverloadedCounts;
-      llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + "libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
+      llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
       for(auto pair: libFunctionOverloadedCounts) {
         overloadedCountsFile << "{\"" << pair.first << "\", 0},";
       }
@@ -1449,7 +1455,7 @@ namespace {
       else {
         OS << '"' << EED->getName() << '"';
       }
-      OS << ", ...arguments})}";
+      OS << ", ...Array.from(arguments).slice(1)})}";
     }
     
     void printAnyStructSignature(std::string definition, std::string name, NominalTypeDecl *D) {
@@ -1541,8 +1547,8 @@ namespace {
       }
       
       if(kind == "enum") {
-        OS << "\nstatic infix_61_61(a, b){return a.rawValue == b.rawValue}";
-        OS << "\nstatic infix_33_61(a, b){return a.rawValue != b.rawValue}";
+        OS << "\nstatic infix_61_61($info, a, b){return a.rawValue == b.rawValue}";
+        OS << "\nstatic infix_33_61($info, a, b){return a.rawValue != b.rawValue}";
       }
       
       OS << "\n}";
@@ -1690,7 +1696,7 @@ namespace {
               if(accessor->isImplicit()) continue;
               
               std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
-              std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams()) + printFuncBody(accessor);
+              std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams(), nullptr, false) + printFuncBody(accessor);
               
               info.accessorBodies[accessorType] = bodyStr;
             }
@@ -1971,7 +1977,7 @@ namespace {
         OS << " type";
     }
     
-    std::string printFuncSignature(ParameterList *params, GenericParamList *genericParams) {
+    std::string printFuncSignature(ParameterList *params, GenericParamList *genericParams, DeclContext *context = nullptr, bool printInfo = true) {
       
       std::string signature = "";
       std::string genericStr;
@@ -1980,16 +1986,26 @@ namespace {
       signature += genericStream.str();
 
       signature += "(";
-      signature += printFuncParams(params);
+      signature += printFuncParams(params, context, printInfo);
       signature += ")";
 
       return signature;
     }
     
-    std::string printFuncParams(ParameterList *params) {
+    std::string printFuncParams(ParameterList *params, DeclContext *context = nullptr, bool printInfo = true) {
       std::string signature = "";
+      bool first = true;
+      if(printInfo) {
+        signature += "$info";
+        first = false;
+        if(context) {
+          std::string str;
+          llvm::raw_string_ostream stream(str);
+          stream << context;
+          signature += stream.str();
+        }
+      }
       if(params) {
-        bool first = true;
         for (auto P : *params) {
           if(first) first = false;
           else signature += ", ";
@@ -2082,11 +2098,7 @@ namespace {
       if(params) {
         int i = 0;
         for (auto P : *params) {
-          std::string parameterStr;
-          llvm::raw_string_ostream parameterStream(parameterStr);
-          printParameter(P, parameterStream);
-          paramRepr.push_back(parameterStream.str() + (P->isAutoClosure() ? "()" : ""));
-          i++;
+          paramRepr.push_back("#A" + std::to_string(i++) + (P->isAutoClosure() ? "()" : ""));
         }
       }
 
@@ -2136,7 +2148,19 @@ namespace {
         result.shouldBeCommentedOut = false;
       }
       
-      result.str = std::regex_replace(result.str, std::regex("#AA"), regex_escape(printFuncParams(params)));
+      if(result.str.find("#AA") != std::string::npos) {
+        result.str = std::regex_replace(result.str, std::regex("#AA"), regex_escape(printFuncParams(params, nullptr, false)));
+      }
+      else if(params) {
+        int i = 0;
+        for (auto P : *params) {
+          std::string parameterStr;
+          llvm::raw_string_ostream parameterStream(parameterStr);
+          printParameter(P, parameterStream);
+          result.str = std::regex_replace(result.str, std::regex("#A" + std::to_string(i)), regex_escape(parameterStream.str()));
+          i++;
+        }
+      }
       
       return result;
     }
@@ -2174,7 +2198,7 @@ namespace {
         return "";
       }
       
-      std::string signature = printFuncSignature(FD->getParameters(), FD->getGenericParams());
+      std::string signature = printFuncSignature(FD->getParameters(), FD->getGenericParams(), FD->getInnermostDeclContext());
       str += signature;
 
       if(LIB_GENERATE_MODE && (!FD->getDeclContext()->getSelfProtocolDecl() || FD->getDeclContext()->getExtendedProtocolDecl())) {
@@ -3616,10 +3640,10 @@ public:
     else {
       string = "#L." + getName(E->getMember().getDecl()) + "$";
       if(lAssignmentExpr == E) {
-        string += "set(#ASS, #AA)";
+        string += "set(#I, #ASS, #AA)";
       }
       else {
-        string += "get(#AA)";
+        string += "get(#I, #AA)";
       }
     }
     
@@ -3627,6 +3651,8 @@ public:
     
     functionArgsCall = skipWrapperExpressions(E->getIndex());
     string = std::regex_replace(string, std::regex("#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
+    
+    string = handleInfo(string, E->getBase());
     
     OS << string;
   }
@@ -3728,7 +3754,8 @@ public:
     }
     OS << string;*/
     
-    OS << "(a, b) => " << dumpToStr(E->getSubExpr()) << "(a, b)";
+    //OS << "(a, b) => " << dumpToStr(E->getSubExpr()) << "(a, b)";
+    OS << dumpToStr(E->getSubExpr());
   }
   void visitCovariantFunctionConversionExpr(CovariantFunctionConversionExpr *E){
     printCommon(E, "covariant_function_conversion_expr") << '\n';
@@ -3967,7 +3994,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     OS << "(";
-    OS << PrintDecl(OS).printFuncSignature(E->getParameters(), nullptr);
+    OS << PrintDecl(OS).printFuncSignature(E->getParameters(), nullptr, nullptr);
     OS << " => ";
     if (E->hasSingleExpressionBody()) {
       printRec(E->getSingleExpressionBody());
@@ -4015,8 +4042,34 @@ public:
         << (label.empty() ? "_" : label.str()) << ":";
     }
   }
+  
+  std::string handleInfo(std::string lrString, Expr *lExpr) {
+    
+    if(lrString.find("#I") != std::string::npos) {
+      lExpr = skipInOutExpr(lExpr);
+      std::string iString = "null";
+      if (auto lDeclrefExpr = dyn_cast<DeclRefExpr>(lExpr)) {
+        if (lDeclrefExpr->getDeclRef().isSpecialized()) {
+          iString = "{";
+          auto substitutions = lDeclrefExpr->getDeclRef().getSubstitutions();
+          auto params = substitutions.getGenericSignature()->getGenericParams();
+          int i = 0;
+          for(Type T: substitutions.getReplacementTypes()) {
+            iString += params[i]->getName().get();
+            iString += ": " + getTypeName(T);
+            if(i) iString += ", ";
+            i++;
+          }
+          iString += "}";
+        }
+      }
+      lrString = std::regex_replace(lrString, std::regex("#I"), regex_escape(iString));
+    }
+    
+    return lrString;
+  }
 
-  void printApplyExpr(Expr *lExpr, Expr *rExpr, std::string rName = "#AA", std::string defaultSuffix = "(#AA)") {
+  void printApplyExpr(Expr *lExpr, Expr *rExpr, std::string defaultSuffix = "(#I, #AA)") {
     /*printCommon(E, NodeName);
     if (E->isSuper())
       PrintWithColorRAII(OS, ExprModifierColor) << " super";
@@ -4057,7 +4110,7 @@ public:
             lString = replacement;
           }
           else {
-            lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #AA)";
+            lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #I, #AA)";
           }
           defaultSuffix = "";
         }
@@ -4088,11 +4141,13 @@ public:
     else if(rString.find("#NOL") != std::string::npos) {
       lrString = std::regex_replace(rString, std::regex("#NOL"), "");
     }
-    //otherwise we replace #R in left-hand side; if no #R present, we assume the default .#R or (#AA)
+    //otherwise we replace #AA in left-hand side; if no #AA present, we assume the default .#AA or (#AA)
     else {
-      if(lString.find(rName) == std::string::npos) lString += defaultSuffix;
-      lrString = std::regex_replace(lString, std::regex(rName), regex_escape(rString));
+      if(lString.find("#A") == std::string::npos) lString += defaultSuffix;
+      lrString = std::regex_replace(lString, std::regex("#AA"), regex_escape(rString));
     }
+    
+    lrString = handleInfo(lrString, lExpr);
     
     OS << lrString;
   }
@@ -4117,7 +4172,7 @@ public:
       }
     }
     
-    printApplyExpr(skipInOutExpr(E->getArg()), E->getFn(), "#R", ".#R");
+    printApplyExpr(skipInOutExpr(E->getArg()), E->getFn(), ".#AA");
   }
   void visitConstructorRefCallExpr(ConstructorRefCallExpr *E) {
     printApplyExpr(E->getFn(), E->getArg());
@@ -5127,7 +5182,7 @@ namespace {
     }
 
     void visitPrimaryArchetypeType(PrimaryArchetypeType *T, StringRef label) {
-      printArchetypeCommon(T, "primary_archetype_type", label);
+      /*printArchetypeCommon(T, "primary_archetype_type", label);
       printField("name", T->getFullName());
       OS << "\n";
       auto genericEnv = T->getGenericEnvironment();
@@ -5135,7 +5190,11 @@ namespace {
         owningDC->printContext(OS, Indent + 2);
       }
       printArchetypeNestedTypes(T);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      auto genericEnv = T->getGenericEnvironment();
+      if (auto owningDC = genericEnv->getOwningDeclContext()) {
+        OS << "$info" << owningDC << "." << T->getFullName();
+      }
     }
     void visitNestedArchetypeType(NestedArchetypeType *T, StringRef label) {
       printArchetypeCommon(T, "nested_archetype_type", label);
