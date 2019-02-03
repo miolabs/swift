@@ -105,6 +105,8 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Array.init()", "return []"},
   {"Swift.(file).BinaryInteger./infix(_:Self,_:Self)", "return (#A0 / #A1) | 0"},
   {"Swift.(file).BinaryInteger./=infix(_:Self,_:Self)", "lhs$inout.set((lhs$inout.get() / rhs) | 0)"},
+  {"Swift.(file).Int8.<<infix(_:Int8,_:Int8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += j === 0 ? -128 : Math.pow(2, 7 - j)\n}\nreturn result"},
+  {"Swift.(file).UInt8.<<infix(_:UInt8,_:UInt8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += Math.pow(2, 7 - j)\n}\nreturn result"},
   {"XCTest.(file).XCTAssert(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(!expression()) throw message()"},
   {"XCTest.(file).XCTAssertEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(expression1() != expression2()) throw message()"},
   {"XCTest.(file).XCTAssertFalse(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression()) throw message()"},
