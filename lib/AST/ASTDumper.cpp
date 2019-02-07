@@ -51,7 +51,7 @@ const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-vis
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
-const std::string RESERVED_VAR_NAMES[] = {"in"};
+const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","boolean","enum","int","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","long","throw","catch","final","native","throws","char","finally","new","transient","class","float","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","void","delete","implements","return","volatile","do","import","short","while","double","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","Array","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","JavaArray","radio","confirm","JavaClass","reset","constructor","JavaObject","screenX","crypto","JavaPackage","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","String","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload"};
 
 const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).String.count", "return this.length"},
@@ -416,8 +416,11 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
     name = getFunctionName(subscriptDecl);
   }
-  else {
+  else if(D->hasName()) {
     name = D->getBaseName().userFacingName();
+  }
+  else {
+    name = "_";
   }
   
   if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
@@ -1430,14 +1433,14 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       OS << "\nstatic ";
       if(!EED->hasAssociatedValues()) OS << "get ";
-      OS << EED->getName() << "() {return ";
+      OS << getName(EED) << "() {return ";
       OS << "Object.assign(new " << getTypeName(EED->getParentEnum()->getDeclaredInterfaceType()) << "(), ";
       OS << "{rawValue: ";
       if(EED->hasRawValueExpr()) {
         OS << dumpToStr(EED->getRawValueExpr());
       }
       else {
-        OS << '"' << EED->getName() << '"';
+        OS << '"' << getName(EED) << '"';
       }
       OS << ", ...Array.from(arguments).slice(1)})}";
     }
@@ -1673,7 +1676,7 @@ namespace {
               info.varName += "$tuple";
             }
             else {
-              info.varName = VD->getNameStr();
+              info.varName = getName(VD);
             }
           }
           
@@ -1689,11 +1692,11 @@ namespace {
             }
           }
           
-          info.varNames.push_back(VD->getNameStr());
+          info.varNames.push_back(getName(VD));
           
           if(node.first.size()) {
             info.tupleInit += ", ";
-            info.tupleInit += VD->getNameStr();
+            info.tupleInit += getName(VD);
             info.tupleInit += " = $tuple";
             std::string indexes = "";
             for(auto index : node.first) {
@@ -1724,6 +1727,7 @@ namespace {
         
         auto flattened = flattenPattern(entry.getPattern());
         auto info = singlePatternBinding(flattened);
+        bool withinStruct = info.varDecl && info.varDecl->getDeclContext()->isTypeContext();
         
         if(LIB_GENERATE_MODE) {
           if(info.varName[0] == '_') continue;
@@ -1732,15 +1736,20 @@ namespace {
         }
         
         bool isOverriden = false;
-        if (info.varDecl->getDeclContext()->isTypeContext()) {
+        if (withinStruct) {
           if (auto *overriden = entry.getPattern()->getSingleVar()->getOverriddenDecl()) {
             isOverriden = true;
           }
         }
         
         if((!isOverriden || entry.getInit()) && !LIB_GENERATE_MODE) {
-          OS << "\n" << info.varPrefix << info.varName;
-          if(info.varDecl->getDeclContext()->isTypeContext() && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
+          if(info.varDecl) {
+            OS << "\n" << info.varPrefix << info.varName;
+          }
+          else {
+            OS << "\n const _";
+          }
+          if(withinStruct && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
             OS << "$internal";
           }
           if(entry.getInit()) {
@@ -1748,7 +1757,7 @@ namespace {
           }
         }
         
-        if(info.varDecl->getDeclContext()->isTypeContext() && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
+        if(withinStruct && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
           std::string internalGetVar = "this." + info.varName + "$internal";
           std::string internalSetVar = "this." + info.varName + "$internal = $newValue";
           if(isOverriden) {
@@ -2049,7 +2058,7 @@ namespace {
       if (auto params = FD->getParameters()) {
         for (auto P : *params) {
           if(P->isInOut()) {
-            std::string paramName = P->getBaseName().userFacingName().data();
+            std::string paramName = getName(P);
             result += "\nlet " + paramName + " = " + paramName + "$inout.get()";
           }
         }
@@ -2062,7 +2071,7 @@ namespace {
       if (auto params = FD->getParameters()) {
         for (auto P : *params) {
           if(P->isInOut()) {
-            std::string paramName = P->getBaseName().userFacingName().data();
+            std::string paramName = getName(P);
             result += "\n" + paramName + "$inout.set(" + paramName + ")";
           }
         }
