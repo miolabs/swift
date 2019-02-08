@@ -51,7 +51,7 @@ const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-vis
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
-const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","boolean","enum","int","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","long","throw","catch","final","native","throws","char","finally","new","transient","class","float","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","void","delete","implements","return","volatile","do","import","short","while","double","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","Array","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","JavaArray","radio","confirm","JavaClass","reset","constructor","JavaObject","screenX","crypto","JavaPackage","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","String","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload"};
+const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","throw","catch","final","native","throws","finally","new","class","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","delete","implements","return","volatile","do","import","while","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","radio","confirm","reset","constructor","screenX","crypto","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload"};
 
 const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).String.count", "return this.length"},
@@ -107,6 +107,7 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Int8.<<infix(_:Int8,_:Int8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += j === 0 ? -128 : Math.pow(2, 7 - j)\n}\nreturn result"},
   {"Swift.(file).UInt8.<<infix(_:UInt8,_:UInt8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += Math.pow(2, 7 - j)\n}\nreturn result"},
   {"Darwin.(file).arc4random_uniform(_:UInt32)", "return (Math.random() * #AA) | 0"},
+  {"Darwin.(file).arc4random()", "return arc4random_uniform(null, 4294967296)"},
   {"Swift.(file).UnsignedInteger.init(_:T)", "return #AA"},
   {"Swift.(file).SignedInteger.init(_:T)", "return #AA"},
   {"Swift.(file).FixedWidthInteger.init(_:T)", "return #AA"},
@@ -153,6 +154,8 @@ Expr *lAssignmentExpr;
 Expr *functionArgsCall;
 
 std::vector<std::string> optionalCondition = {};
+
+bool printGenerics = false;
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {
   {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "reduceInvertedArguments"},
@@ -495,6 +498,22 @@ void getAllMembers2(NominalTypeDecl *D, AllMembers &result, bool recursive, bool
 AllMembers getAllMembers(NominalTypeDecl *D, bool recursive) {
   AllMembers result;
   getAllMembers2(D, result, recursive);
+  return result;
+}
+
+std::string printGenericParams(GenericParamList *genericParams) {
+  if(!genericParams) return "";
+  
+  std::string result = "";
+  result += "<";
+  bool first = true;
+  for(auto *param : *genericParams) {
+    if(first) first = false;
+    else result += ", ";
+    result += getName(param);
+  }
+  result += ">";
+  
   return result;
 }
 
@@ -1094,8 +1113,6 @@ namespace {
     }
 
     void visitTypeAliasDecl(TypeAliasDecl *TAD) {
-      //we should be ignoring typealiases for associatedtypes, i.e. within class that conforms to protocol
-      //but explicitly defined typealiases are fine I guess
       /*printCommon(TAD, "typealias");
       PrintWithColorRAII(OS, TypeColor) << " type='";
       if (TAD->getUnderlyingTypeLoc().getType()) {
@@ -1106,6 +1123,18 @@ namespace {
       }
       printInherited(TAD->getInherited());
       OS << "')";*/
+      if(LIB_GENERATE_MODE) return;
+      
+      if(TAD->getDeclContext()->isTypeContext()) {
+        OS << "static readonly ";
+      }
+      else {
+        OS << "const ";
+      }
+      OS << getName(TAD);
+      if (TAD->getUnderlyingTypeLoc().getType()) {
+        OS << " = " << getTypeName(TAD->getUnderlyingTypeLoc().getType());
+      }
     }
 
     void printAbstractTypeParamCommon(AbstractTypeParamDecl *decl,
@@ -1269,9 +1298,9 @@ namespace {
       //SmallVectorImpl<swift::TypeDecl *>
       //MD->getLocalTypeDecls(topLevelDecls);
       //MD->getDisplayDecls(topLevelDecls);
-      std::unordered_map<NominalTypeDecl*, std::vector<std::string>> allMembers;
-      std::list<NominalTypeDecl*> orderedList;
-      std::list<NominalTypeDecl*> unorderedList;
+      std::unordered_map<ValueDecl*, std::vector<std::string>> allMembers;
+      std::list<ValueDecl*> orderedList;
+      std::list<ValueDecl*> unorderedList;
       
       for (Decl *D : displayDecls) {
         std::string outName;
@@ -1294,7 +1323,25 @@ namespace {
             allMembers[NVD] = allMembersStr;
             unorderedList.push_back(NVD);
           }
-          else orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
+          /*else if(auto *TAD = dyn_cast<TypeAliasDecl>(VD)) {
+            OS << "\n!" << getName(TAD);
+            std::vector<std::string> allMembersStr;
+            if (TAD->getUnderlyingTypeLoc().getType()) {
+              //bodge way to get needed types by matching words in type name
+              std::smatch sm;
+              OS << "  " << getTypeName(TAD->getUnderlyingTypeLoc().getType());
+              std::regex_match (getTypeName(TAD->getUnderlyingTypeLoc().getType()), sm, std::regex("[A-Za-z0-9_]+"));
+              for(auto match : sm) {
+                OS << "  " << match;
+                allMembersStr.push_back(match);
+              }
+            }
+            allMembers[NVD] = allMembersStr;
+            unorderedList.push_back(TAD);
+          }*/
+          else {
+            orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
+          }
         }
         else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
           outName = getTypeName(ED->getExtendedType());
@@ -1329,7 +1376,7 @@ namespace {
           else ++i;
         }
       }
-      for (NominalTypeDecl *D : orderedList) {
+      for (auto *D : orderedList) {
         orderFile << "'" << std::regex_replace(getName(D), std::regex("MIO_Mixin_"), "") << "',";
       }
       
@@ -1485,7 +1532,7 @@ namespace {
         if(wasAssociatedType) OS << ">";
       }
       else {
-        printGenericParameters(OS, D->getGenericParams());
+        OS << printGenericParams(D->getGenericParams());
       }
 
       bool wasClass = false, wasProtocol = false;
@@ -1515,6 +1562,9 @@ namespace {
       }
       if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
         OS << "\nstatic readonly $mixin = true";
+      }
+      if(kind != "protocol") {
+        OS << "\nstatic readonly $infoAddress = '" << D->getInnermostDeclContext() << "'";
       }
 
       if(LIB_GENERATE_MODE && LIB_CLONE_STRUCT_FILLS.count(getMemberIdentifier(D))) {
@@ -1976,10 +2026,8 @@ namespace {
     std::string printFuncSignature(ParameterList *params, GenericParamList *genericParams, DeclContext *context = nullptr, bool printInfo = true) {
       
       std::string signature = "";
-      std::string genericStr;
-      llvm::raw_string_ostream genericStream(genericStr);
-      printGenericParameters(genericStream, genericParams);
-      signature += genericStream.str();
+
+      signature += printGenericParams(genericParams);
 
       signature += "(";
       signature += printFuncParams(params, context, printInfo);
@@ -2082,7 +2130,6 @@ namespace {
     
     struct LibGeneratedFuncBody {
       std::string str = "";
-      bool shouldBeCommentedOut = false;
     };
     LibGeneratedFuncBody libGenerateFuncBody(AbstractFunctionDecl *FD, ValueDecl *NameD) {
       bool isAssignment = false;
@@ -2135,13 +2182,11 @@ namespace {
       }
       else {
         //regular function
-        result.str = "return this." + userFacingName + "(#AA)";
-        result.shouldBeCommentedOut = true;
+        result.str = "/*return this." + userFacingName + "(#AA)*/";
       }
       std::string libBody = getLibBody(NameD, isAssignment);
       if(libBody.length()) {
         result.str = libBody;
-        result.shouldBeCommentedOut = false;
       }
       
       if(result.str.find("#AA") != std::string::npos) {
@@ -2175,7 +2220,6 @@ namespace {
           str += "/*" + getMemberIdentifier(declRoot) + "*/\n";
         }
         libGeneratedFuncBody = libGenerateFuncBody(FD, NameD);
-        if(libGeneratedFuncBody.shouldBeCommentedOut && (!FD->getDeclContext()->getSelfProtocolDecl() || FD->getDeclContext()->getExtendedProtocolDecl())) str += "/*";
       }
       
       std::string functionPrefix = "";
@@ -2199,7 +2243,6 @@ namespace {
 
       if(LIB_GENERATE_MODE && (!FD->getDeclContext()->getSelfProtocolDecl() || FD->getDeclContext()->getExtendedProtocolDecl())) {
         str += " {\n" + libGeneratedFuncBody.str + "\n}";
-        if(libGeneratedFuncBody.shouldBeCommentedOut) str += "*/";
       }
       else {
         str += printFuncBody(FD);
@@ -2282,7 +2325,8 @@ namespace {
     }
 
     void visitIfConfigDecl(IfConfigDecl *ICD) {
-      printCommon(ICD, "if_config_decl");
+      //ignoring for now
+      /*printCommon(ICD, "if_config_decl");
       Indent += 2;
       for (auto &Clause : ICD->getClauses()) {
         OS << '\n';
@@ -2302,7 +2346,7 @@ namespace {
       }
 
       Indent -= 2;
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitPoundDiagnosticDecl(PoundDiagnosticDecl *PDD) {
@@ -2316,7 +2360,8 @@ namespace {
     }
 
     void visitPrecedenceGroupDecl(PrecedenceGroupDecl *PGD) {
-      printCommon(PGD, "precedence_group_decl ");
+      //ignoring for now
+      /*printCommon(PGD, "precedence_group_decl ");
       OS << PGD->getName() << "\n";
 
       OS.indent(Indent+2);
@@ -2338,7 +2383,7 @@ namespace {
       printRelations("higherThan", PGD->getHigherThan());
       printRelations("lowerThan", PGD->getLowerThan());
 
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void printOperatorIdentifiers(OperatorDecl *OD) {
@@ -2750,10 +2795,16 @@ public:
         conditionStr += "(" + dumpToStr(condition) + ")";
       }
       else if (auto pattern = elt.getPatternOrNull()) {
+        if(conditionStr.length()) conditionStr += " && ";
         auto ifLet = getIfLet(pattern, elt.getInitializer());
-        if (conditionStr.length()) conditionStr += " && ";
-        conditionStr += ifLet.conditionStr;
-        initializerStr += ifLet.initializerStr;
+        if(!ifLet.conditionStr.length()) {
+          //when using '_'
+          conditionStr += ifLet.initializerStr + " != null";
+        }
+        else {
+          conditionStr += ifLet.conditionStr;
+          initializerStr += ifLet.initializerStr;
+        }
       }
     }
     
@@ -3358,8 +3409,10 @@ public:
   }
 
   void visitDiscardAssignmentExpr(DiscardAssignmentExpr *E) {
-    printCommon(E, "discard_assignment_expr");
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    /*printCommon(E, "discard_assignment_expr");
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    //TODO move level up to assign_expr and ignore the assignment altogether, but this will do for now
+    OS << "_.discardAssignment";
   }
 
   void visitDeclRefExpr(DeclRefExpr *E) {
@@ -3515,10 +3568,11 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitDotSelfExpr(DotSelfExpr *E) {
-    printCommon(E, "dot_self_expr");
+    /*printCommon(E, "dot_self_expr");
     OS << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    printRec(E->getSubExpr());
   }
   void visitParenExpr(ParenExpr *E) {
     /*printCommon(E, "paren_expr");
@@ -3799,9 +3853,11 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitBridgeToObjCExpr(BridgeToObjCExpr *E) {
-    printCommon(E, "bridge_to_objc_expr") << '\n';
+    //CAREFUL: ignoring the bridge, because the plan for now is to internally use Array for NSArray too
+    //that might change later though
+    //printCommon(E, "bridge_to_objc_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitLoadExpr(LoadExpr *E) {
     //I think we can just ignore this, as it's just a wrapper
@@ -3810,9 +3866,10 @@ public:
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitMetatypeConversionExpr(MetatypeConversionExpr *E) {
-    printCommon(E, "metatype_conversion_expr") << '\n';
+    /*printCommon(E, "metatype_conversion_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    printRec(E->getSubExpr());
   }
   void visitCollectionUpcastConversionExpr(CollectionUpcastConversionExpr *E) {
     printCommon(E, "collection_upcast_expr");
@@ -4018,10 +4075,13 @@ public:
   }
 
   void visitDynamicTypeExpr(DynamicTypeExpr *E) {
-    printCommon(E, "metatype_expr");
+    /*printCommon(E, "metatype_expr");
     OS << '\n';
     printRec(E->getBase());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    printGenerics = true;
+    OS << "_clarifyGenerics(" + getTypeName(GetTypeOfExpr(E)) + ")";
+    printGenerics = false;
   }
 
   void visitOpaqueValueExpr(OpaqueValueExpr *E) {
@@ -4051,9 +4111,11 @@ public:
           auto params = substitutions.getGenericSignature()->getGenericParams();
           int i = 0;
           for(Type T: substitutions.getReplacementTypes()) {
-            iString += params[i]->getName().get();
-            iString += ": " + getTypeName(T);
             if(i) iString += ", ";
+            iString += params[i]->getName().get();
+            printGenerics = true;
+            iString += ": _clarifyGenerics(" + getTypeName(T) + ")";
+            printGenerics = false;
             i++;
           }
           iString += "}";
@@ -4107,6 +4169,7 @@ public:
           }
           else {
             lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #I, #AA)";
+            lString = handleInfo(lString, initDeclRef);
           }
           defaultSuffix = "";
         }
@@ -4285,9 +4348,17 @@ public:
     if(isAssign) {
       OS << "if(" << optionalCondition << ") {" << expr << "}";
     }
-    else {*/
+    else {
       OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : null)";
-    /*}*/
+    }*/
+    
+    if(optionalCondition.back().length()) {
+      OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : null)";
+    }
+    else {
+      OS << expr;
+    }
+    
     optionalCondition.pop_back();
   }
   void visitForceValueExpr(ForceValueExpr *E) {
@@ -5033,7 +5104,9 @@ namespace {
     }
 
     void visitTupleType(TupleType *T, StringRef label) {
-      printCommon(label, "tuple_type");
+      //TODO
+      OS << "'?tuple_type'";
+      /*printCommon(label, "tuple_type");
       printField("num_elements", T->getNumElements());
       Indent += 2;
       for (const auto &elt : T->getElements()) {
@@ -5047,7 +5120,7 @@ namespace {
         OS << ")";
       }
       Indent -= 2;
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
 #define REF_STORAGE(Name, name, ...) \
@@ -5177,7 +5250,7 @@ namespace {
       Indent -= 2;
     }
 
-    void visitPrimaryArchetypeType(PrimaryArchetypeType *T, StringRef label) {
+    void visitPrimaryArchetypeType(PrimaryArchetypeType *T, StringRef label, bool noGenericAccess = false) {
       /*printArchetypeCommon(T, "primary_archetype_type", label);
       printField("name", T->getFullName());
       OS << "\n";
@@ -5189,16 +5262,31 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
       auto genericEnv = T->getGenericEnvironment();
       if (auto owningDC = genericEnv->getOwningDeclContext()) {
-        OS << "$info" << owningDC << "." << T->getFullName();
+        if (auto nominalDC = dyn_cast<NominalTypeDecl>(owningDC)) {
+          OS << "this.";
+        }
+        OS << "$info" << owningDC;
+        if(!noGenericAccess) OS << "." << T->getFullName();
       }
     }
     void visitNestedArchetypeType(NestedArchetypeType *T, StringRef label) {
-      printArchetypeCommon(T, "nested_archetype_type", label);
+      /*printArchetypeCommon(T, "nested_archetype_type", label);
       printField("name", T->getFullName());
       printField("parent", T->getParent());
       printField("assoc_type", T->getAssocType()->printRef());
       printArchetypeNestedTypes(T);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      ArchetypeType *base = T;
+      while(true) {
+        if(auto *NAT = dyn_cast<NestedArchetypeType>(base)) {
+          base = NAT->getParent();
+        }
+        else break;
+      }
+      PrimaryArchetypeType *primaryArchetypeType = dyn_cast<PrimaryArchetypeType>(base);
+      assert(primaryArchetypeType && "I thought there'd always be PrimaryArchetypeType at base :(");
+      visitPrimaryArchetypeType(primaryArchetypeType, label, true);
+      OS << "." << T->getFullName();
     }
     void visitOpenedArchetypeType(OpenedArchetypeType *T, StringRef label) {
       printArchetypeCommon(T, "opened_archetype_type", label);
@@ -5208,24 +5296,40 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
 
-    void visitGenericTypeParamType(GenericTypeParamType *T, StringRef label) {
-      printCommon(label, "generic_type_param_type");
+    void visitGenericTypeParamType(GenericTypeParamType *T, StringRef label, std::string chain = "") {
+      /*printCommon(label, "generic_type_param_type");
       printField("depth", T->getDepth());
       printField("index", T->getIndex());
       if (auto decl = T->getDecl())
         printField("decl", decl->printRef());
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      if(auto decl = T->getDecl()) {
+        OS << "{$genericType: '" << getName(decl) << "'";
+        if(chain.length()) OS << ", $subchain: '" << chain << "'";
+        OS << "}";
+      }
     }
 
-    void visitDependentMemberType(DependentMemberType *T, StringRef label) {
-      printCommon(label, "dependent_member_type");
+    void visitDependentMemberType(DependentMemberType *T, StringRef label, std::string chain = "") {
+      /*printCommon(label, "dependent_member_type");
       if (auto assocType = T->getAssocType()) {
         printField("assoc_type", assocType->printRef());
       } else {
         printField("name", T->getName().str());
       }
       printRec("base", T->getBase());
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      if(chain.length()) chain = "." + chain;
+      chain = T->getName().str().data() + chain;
+      if(auto *dependentMemberType = dyn_cast<DependentMemberType>(T->getBase().getPointer())) {
+        visitDependentMemberType(dependentMemberType, label, chain);
+      }
+      else if(auto *genericTypeParamType = dyn_cast<GenericTypeParamType>(T->getBase().getPointer())) {
+        visitGenericTypeParamType(genericTypeParamType, label, chain);
+      }
+      else {
+        llvm_unreachable("I thought it'd be always DependentMemberType or GenericTypeParamType");
+      }
     }
 
     void printAnyFunctionParams(ArrayRef<AnyFunctionType::Param> params,
@@ -5268,8 +5372,10 @@ namespace {
     }
 
     void visitFunctionType(FunctionType *T, StringRef label) {
-      printAnyFunctionTypeCommon(T, label, "function_type");
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      //TODO
+      OS << "'?function_type'";
+      /*printAnyFunctionTypeCommon(T, label, "function_type");
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     }
 
     void visitGenericFunctionType(GenericFunctionType *T, StringRef label) {
@@ -5326,13 +5432,23 @@ namespace {
 
     void visitProtocolCompositionType(ProtocolCompositionType *T,
                                       StringRef label) {
-      printCommon(label, "protocol_composition_type");
+      /*printCommon(label, "protocol_composition_type");
       if (T->hasExplicitAnyObject())
         OS << " any_object";
       for (auto proto : T->getMembers()) {
         printRec(proto);
       }
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      /*std::string result = "class {}";
+      for (auto proto : T->getMembers()) {
+        std::string str;
+        llvm::raw_string_ostream stream(str);
+        proto->dump(stream);
+        result = "_mixin(" + result + ", " + stream.str() + ")";
+      }
+      OS << result;*/
+      OS << "'?protocol_composition_type'";
     }
 
     void visitLValueType(LValueType *T, StringRef label) {
@@ -5386,11 +5502,23 @@ namespace {
       for (auto arg : T->getGenericArgs())
         printRec(arg);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      if (printGenerics) {
+        OS << "{Self:";
+      }
       if (T->getParent()) {
         printRec("parent", T->getParent());
         OS << ".";
       }
       OS << getName(T->getDecl());
+      if(printGenerics) {
+        auto params = T->getDecl()->getGenericParams()->getParams();
+        int i = 0;
+        for (auto arg : T->getGenericArgs()) {
+          OS << ", " << params[i++]->getName() << ": ";
+          printRec(arg);
+        }
+        OS << "}";
+      }
     }
 
     void visitBoundGenericEnumType(BoundGenericEnumType *T, StringRef label) {
