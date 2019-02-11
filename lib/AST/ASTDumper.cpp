@@ -128,8 +128,19 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
 const std::unordered_map<std::string, std::string> LIB_MIXINS = {
   {"Swift.(file).String", "String"},
   {"Swift.(file).Bool", "Boolean"},
-  {"Swift.(file).Int", "Number"},
   {"Swift.(file).Double", "Number"},
+  {"Swift.(file).Float", "Number"},
+  {"Swift.(file).Float80", "Number"},
+  {"Swift.(file).Int", "Number"},
+  {"Swift.(file).Int8", "Number"},
+  {"Swift.(file).Int16", "Number"},
+  {"Swift.(file).Int32", "Number"},
+  {"Swift.(file).Int64", "Number"},
+  {"Swift.(file).UInt", "Number"},
+  {"Swift.(file).UInt8", "Number"},
+  {"Swift.(file).UInt16", "Number"},
+  {"Swift.(file).UInt32", "Number"},
+  {"Swift.(file).UInt64", "Number"},
   {"Swift.(file).Array", "Array"},
   {"Swift.(file).Dictionary", "Map"},
   {"Swift.(file).Set", "Set"}
@@ -530,6 +541,7 @@ std::string printGenericParams(GenericParamList *genericParams) {
 }
 
 std::unordered_map<OpaqueValueExpr*, Expr*> opaqueValueReplacements;
+std::unordered_map<TypeBase*, Expr*> opaqueValueTypeReplacements;
 
 struct TerminalColor {
   llvm::raw_ostream::Colors Color;
@@ -2896,7 +2908,9 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
-    OS << "while(" << conditionAndInitializerStr.conditionStr << ") {\n";
+    OS << "while(true){\n";
+    OS << conditionAndInitializerStr.initializerStr;
+    OS << "\nif(!(" << conditionAndInitializerStr.conditionStr << ")) break";
     printRec(S->getBody());
     OS << "\n}";
   }
@@ -4122,8 +4136,18 @@ public:
   
   std::string handleInfo(std::string lrString, Expr *lExpr) {
     
+    //not sure if that's exhaustive; we need to get the nested DeclRefExpr
+    while(true) {
+      if (auto *inOutExpr = dyn_cast<InOutExpr>(lExpr)) {
+        lExpr = inOutExpr->getSubExpr();
+      }
+      else if (auto *dotSyntaxCallExpr = dyn_cast<DotSyntaxCallExpr>(lExpr)) {
+        lExpr = dotSyntaxCallExpr->getFn();
+      }
+      else break;
+    }
+    
     if(lrString.find("#I") != std::string::npos) {
-      lExpr = skipInOutExpr(lExpr);
       std::string iString = "null";
       if (auto lDeclrefExpr = dyn_cast<DeclRefExpr>(lExpr)) {
         if (lDeclrefExpr->getDeclRef().isSpecialized()) {
@@ -4400,6 +4424,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     opaqueValueReplacements[E->getOpaqueValue()] = E->getExistentialValue();
+    opaqueValueTypeReplacements[GetTypeOfExpr(E->getOpaqueValue()).getPointer()] = E->getExistentialValue();
     printRec(E->getSubExpr());
   }
   void visitMakeTemporarilyEscapableExpr(MakeTemporarilyEscapableExpr *E) {
@@ -5320,11 +5345,14 @@ namespace {
       OS << "." << T->getFullName();
     }
     void visitOpenedArchetypeType(OpenedArchetypeType *T, StringRef label) {
-      printArchetypeCommon(T, "opened_archetype_type", label);
+      /*printArchetypeCommon(T, "opened_archetype_type", label);
       printRec("opened_existential", T->getOpenedExistentialType());
       printField("opened_existential_id", T->getOpenedExistentialID());
       printArchetypeNestedTypes(T);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      opaqueValueTypeReplacements[T]->dump(OS);
+      OS << ".constructor";
     }
 
     void visitGenericTypeParamType(GenericTypeParamType *T, StringRef label, std::string chain = "") {
