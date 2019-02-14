@@ -62,13 +62,13 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Dictionary.count", "return this.size"},
   {"Swift.(file).Dictionary.makeIterator()", "return new SwiftIterator((current) => Array.from(this)[current])"},
   {"Swift.(file).Array.count", "return this.length"},
-  {"Swift.(file).Array.+infix(_:Array<Element>,_:Array<Element>)", "return #A0.concat(#A1)"},
+  {"Swift.(file).Array.+infix(_:Array<Element>,_:Array<Element>)", "let r = lhs.concat(rhs)\nr.$info = lhs.$info\nreturn r"},
   {"Swift.(file).Array.+=infix(_:Array<Element>,_:Array<Element>)", "#A0.get().appendContentsOf(null, #A1)"},
   {"Swift.(file).Array.append(_:Element)", "this.push(#AA)"},
   {"Swift.(file).Array.append(contentsOf:S)", "this.push.apply(this, #A0)"},
   {"Swift.(file).Array.insert(_:Element,at:Int)", "this.splice(#A1, 0, #A0)"},
   {"Swift.(file).Array.remove(at:Int)", "this.splice(#AA, 1)"},
-  {"Swift.(file).Array.init(repeating:Element,count:Int)", "return new Array(#A1).fill(#A0)"},
+  {"Swift.(file).Array.init(repeating:Element,count:Int)", "let result = new Array(count)\nfor(let i = 0; i < count; i++) result[i] = _cloneStruct(repeatedValue)\nreturn result"},
   {"Swift.(file).Set.insert(_:Element)", "this.add(#AA)"},
   {"Swift.(file).Set.count", "return this.size"},
   {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:C,at:Self.Index)", "this.splice.apply(this, [#A1, 0].concat(#A0))"},
@@ -78,7 +78,9 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).Sequence.enumerated()", "return this.map((v, i) => [i, v])"},
   {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "return this.reduce(#A1.bind(null, null), #A0)"},
   {"Swift.(file)._ArrayProtocol.filter(_:(Self.Element) throws -> Bool)", "return this.filter(#AA.bind(null, null))"},
-  {"Swift.(file).Collection.map(_:(Self.Element) throws -> T)", "return this.map(#AA.bind(null, null))"},
+  {"Swift.(file).Collection.map(_:(Self.Element) throws -> T)", "let result = this.map(transform.bind(null, null))\nresult.$info = {Element: $info.T}\nreturn result"},
+  {"Swift.(file).Collection.dropFirst(_:Int)", "let result = []\nif(!k) k = 1\nfor(let i = k; i < this.count; i++) result.push(this[i])\nreturn result"},
+  {"Swift.(file).Sequence.sorted(by:(Self.Element, Self.Element) throws -> Bool)", "return _cloneStruct(this).sort((a, b) => areInIncreasingOrder(null, a, b) ? -1 : 1)"},
   {"Swift.(file).MutableCollection.sort(by:(Self.Element, Self.Element) throws -> Bool)", "return this.sort((a, b) => areInIncreasingOrder(null, a, b) ? -1 : 1)"},
   {"Swift.(file).??infix(_:T?,_:() throws -> T)", "return #A0 != null ? #A0 : #A1()"},
   {"Swift.(file).??infix(_:T?,_:() throws -> T?)", "return #A0 != null ? #A0 : #A1()"},
@@ -110,7 +112,7 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"Swift.(file).max(_:T,_:T,_:T,_:[T])", "let max = x\nif($info.T.infix_62($info, y, max)) max = y\nif(z != null && $info.T.infix_62($info, z, max)) max = z\nif(rest != null)for(let i of rest)if($info.T.infix_62($info, i, max)) max = i\nreturn max"},
   {"Swift.(file).Array.startIndex", "return 0"},
   {"Swift.(file).Array.endIndex", "return this.length"},
-  {"Swift.(file).Array.==infix(_:Array<Element>,_:Array<Element>)", "if(!lhs) return !rhs\nif(lhs.count != rhs.count) return false\nreturn lhs.every((val, i) => lhs.$info.Element.infix_61_61($info, val, rhs[i]))"},
+  {"Swift.(file).Array.==infix(_:Array<Element>,_:Array<Element>)", "if(!lhs) return !rhs\nif(lhs.count != rhs.count) return false\nreturn lhs.every((val, i) => lhs.$info.Element.infix_61_61($info, val, rhs instanceof ClosedRange || rhs instanceof Range ? i + rhs.lowerBound : rhs[i]))"},
   {"Swift.(file).Array.subscript(_:Range<Int>)", "return this.slice(bounds.first, bounds.last + 1)"},
   {"Swift.(file).RangeReplaceableCollection.removeSubrange(_:R)", "for(let i = this.count - 1; i >= 0; i--) if(bounds.contains($info, i)) this.splice(i, 1)"},
   {"Swift.(file).RangeReplaceableCollection.removeLast()", "return this.pop()"},
@@ -3713,16 +3715,22 @@ public:
       isSet = getMemberIdentifier(nominalDecl) == "Swift.(file).Set";
     }
     
-    if(isSet) OS << "new Set(";
-    OS << "[";
+    OS << "_create(" << (isSet ? "Set, 'initSource'" : "Array, 'initBuffer'") << ", {Element: ";
+    
+    TypeBase *maybeBoundGenericType = GetTypeOfExpr(E).getPointer();
+    if(auto arraySliceType = dyn_cast<ArraySliceType>(maybeBoundGenericType)) maybeBoundGenericType = arraySliceType->getSinglyDesugaredType();
+    if(auto boundGenericType = dyn_cast<BoundGenericType>(maybeBoundGenericType)) {
+      OS << getTypeName(boundGenericType->getGenericArgs()[0]);
+    }
+
+    OS << "}, [";
     bool first = true;
     for (auto elt : E->getElements()) {
       if(first) first = false;
       else OS << ", ";
       printRec(elt);
     }
-    OS << "]";
-    if(isSet) OS << ")";
+    OS << "])";
   }
   void visitDictionaryExpr(DictionaryExpr *E) {
     /*printCommon(E, "dictionary_expr");
@@ -5595,11 +5603,23 @@ namespace {
       for (auto arg : T->getGenericArgs())
         printRec(arg);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      if (printGenerics) {
+        OS << "_clarifyGenerics({Self:";
+      }
       if (T->getParent()) {
         printRec("parent", T->getParent());
         OS << ".";
       }
       OS << getName(T->getDecl());
+      if(printGenerics) {
+        auto params = T->getDecl()->getGenericParams()->getParams();
+        int i = 0;
+        for (auto arg : T->getGenericArgs()) {
+          OS << ", " << params[i++]->getName() << ": ";
+          printRec(arg);
+        }
+        OS << "})";
+      }
     }
 
     void visitBoundGenericStructType(BoundGenericStructType *T,
@@ -5638,11 +5658,23 @@ namespace {
       for (auto arg : T->getGenericArgs())
         printRec(arg);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      if (printGenerics) {
+        OS << "_clarifyGenerics({Self:";
+      }
       if (T->getParent()) {
         printRec("parent", T->getParent());
         OS << ".";
       }
       OS << getName(T->getDecl());
+      if(printGenerics) {
+        auto params = T->getDecl()->getGenericParams()->getParams();
+        int i = 0;
+        for (auto arg : T->getGenericArgs()) {
+          OS << ", " << params[i++]->getName() << ": ";
+          printRec(arg);
+        }
+        OS << "})";
+      }
     }
 
     void visitTypeVariableType(TypeVariableType *T, StringRef label) {
