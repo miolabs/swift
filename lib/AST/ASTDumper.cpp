@@ -49,6 +49,9 @@ const bool GENERATE_STD_LIB = false;
 const bool GENERATE_IMPORTED_MODULE = false;
 const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/";
 
+const bool PRINT_RANGES = false;
+const bool PRINT_EXTENSION = false;
+
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
 const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","throw","catch","final","native","throws","finally","new","class","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","delete","implements","return","volatile","do","import","while","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","radio","confirm","reset","constructor","screenX","crypto","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload", "arguments"};
@@ -357,7 +360,7 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
 }
 
 bool isNative(std::string uniqueIdentifier) {
-  return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0 || uniqueIdentifier.find("ObjectiveC.(file).") == 0 || uniqueIdentifier.find("Darwin.(file).") == 0 || uniqueIdentifier.find("Foundation.(file).") == 0;
+  return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0 || uniqueIdentifier.find("ObjectiveC.(file).") == 0 || uniqueIdentifier.find("Darwin.(file).") == 0 || uniqueIdentifier.find("Foundation.(file).") == 0 || PRINT_EXTENSION;
 }
 std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
   std::string userFacingName = D->getBaseName().userFacingName();
@@ -1147,6 +1150,13 @@ namespace {
         printRec(Member);
       }
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      if(PRINT_EXTENSION) {
+        for (Decl *Member : ED->getMembers()) {
+          OS << '\n';
+          printRec(Member);
+        }
+      }
     }
 
     void printDeclName(const ValueDecl *D) {
@@ -1435,6 +1445,20 @@ namespace {
       overloadedCountsFile.close();
       orderFile.close();
     }
+    
+    void printRange(ValueDecl *VD, bool isTypeContext = false) {
+      if(VD->getFormalAccess() < AccessLevel::Public) return;
+      if(!getName(VD).length() || getName(VD)[0] == '_') return;
+      auto R = VD->getSourceRange();
+      if (R.isValid()) {
+        OS << "\n" << isTypeContext << ",\"";
+        OS << getMemberIdentifier(VD) << "\",\"";
+        R.Start.print(OS, VD->getASTContext().SourceMgr);
+        OS << "\",\"";
+        R.End.print(OS, VD->getASTContext().SourceMgr);
+        OS << "\",";
+      }
+    }
 
     void visitSourceFile(const SourceFile &SF) {
       /*OS.indent(Indent);
@@ -1444,6 +1468,29 @@ namespace {
       
       if(GENERATE_STD_LIB) {
         generateLibForModule(SF.getASTContext().getStdlibModule());
+      }
+      else if(PRINT_RANGES) {
+        for (Decl *D : SF.Decls) {
+          if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
+            if(ND->getFormalAccess() < AccessLevel::Public) continue;
+            if(!getName(ND).length() || getName(ND)[0] == '_') continue;
+            for (Decl *subD : ND->getMembers()) {
+              if (auto *VD = dyn_cast<ValueDecl>(subD)) {
+                printRange(VD, true);
+              }
+            }
+          }
+          else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
+            for (Decl *subD : ED->getMembers()) {
+              if (auto *VD = dyn_cast<ValueDecl>(subD)) {
+                printRange(VD, true);
+              }
+            }
+          }
+          else if(auto *VD = dyn_cast<ValueDecl>(D)) {
+            printRange(VD);
+          }
+        }
       }
       else {
         for (Decl *D : SF.Decls) {
@@ -1550,13 +1597,13 @@ namespace {
     
     void visitAnyStructDecl(std::string kind, NominalTypeDecl *D) {
       
-      structInitializers.push_back({});
-      
       auto all = getAllMembers(D, false);
       std::list<Decl*> members = all.members;
       std::list<Type> inherited = all.inherited;
       std::list<std::string> implementedProtocols;
       Decl* lastNonExtensionMember = all.lastNonExtensionMember;
+      
+      structInitializers.push_back({});
       
       std::string name = getName(D);
       std::string nestedName = getTypeName(D->getDeclaredType());
@@ -2119,7 +2166,7 @@ namespace {
       if(printInfo) {
         signature += "$info";
         first = false;
-        if(context && !LIB_GENERATE_MODE) {
+        if(context && !LIB_GENERATE_MODE && !PRINT_EXTENSION) {
           std::string str;
           llvm::raw_string_ostream stream(str);
           stream << context;
@@ -5377,7 +5424,8 @@ namespace {
         if (auto nominalDC = dyn_cast<NominalTypeDecl>(owningDC)) {
           OS << "this.";
         }
-        OS << "$info" << owningDC;
+        OS << "$info";
+        if(!PRINT_EXTENSION) OS << owningDC;
         if(!noGenericAccess) OS << "." << T->getFullName();
       }
     }
