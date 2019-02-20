@@ -332,6 +332,9 @@ Expr *skipWrapperExpressions(Expr *E) {
     else if(auto *openExistentialExpr = dyn_cast<OpenExistentialExpr>(E)) {
       E = openExistentialExpr->getSubExpr();
     }
+    else if(auto *loadExpr = dyn_cast<LoadExpr>(E)) {
+      E = loadExpr->getSubExpr();
+    }
     else break;
   }
   return E;
@@ -371,14 +374,14 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
   return baseStr;
 }
 
-bool isFilePrivateMethodOfXCTestCase(NominalTypeDecl *ND) {
+bool isXCTestCaseDescendant(NominalTypeDecl *ND) {
   while(true) {
-    if(getMemberIdentifier(ND) == "XCTest.(file).XCTestCase") return true;
     if(!ND->getInherited().size()) return false;
     Type Super = ND->getInherited()[0].getType();
     if(Super->isExistentialType()) return false;
     if(auto supND = Super->getNominalOrBoundGenericNominal()) {
       ND = supND;
+      if(getMemberIdentifier(ND) == "XCTest.(file).XCTestCase") return true;
     }
     else return false;
   }
@@ -399,7 +402,7 @@ std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
     }
     
     if(auto *ND = D->getDeclContext()->getSelfNominalTypeDecl()) {
-      if(isFilePrivateMethodOfXCTestCase(ND)) {
+      if(isXCTestCaseDescendant(ND) && D->getFormalAccess() <= AccessLevel::FilePrivate) {
         userFacingName += "$filePrivate";
       }
     }
@@ -1858,9 +1861,13 @@ namespace {
           auto *VD = namedPattern->getDecl();
           std::string varName = getName(VD);
           
-          if(initExpr && dumpToStr(initExpr).find(varName) != std::string::npos) {
-            varName += "_dupl";
-            nameReplacementsById[getMemberIdentifier(VD)] = varName;
+          if(initExpr) {
+            if(auto *declRefExpr = dyn_cast<DeclRefExpr>(skipWrapperExpressions(initExpr))) {
+              if(varName == getName(declRefExpr->getDecl())) {
+                varName += "_dupl";
+                nameReplacementsById[getMemberIdentifier(VD)] = varName;
+              }
+            }
           }
           
           if(!info.varDecl) {
@@ -3961,29 +3968,32 @@ public:
     }
     
     for(unsigned resultArgI = 0, srcArgI = 0; resultArgI < E->getElementMapping().size(); resultArgI++) {
-      if(srcArgI) OS << ", ";
       if(E->getElementMapping()[resultArgI] >= 0) {
-        OS << dumpToStr(arguments[srcArgI++]);
+        if(srcArgI >= arguments.size()) break;
+        OS << (resultArgI ? ", " : "") << dumpToStr(arguments[srcArgI++]);
       }
       else if(E->getElementMapping()[resultArgI] == -1) {
+        OS << (resultArgI ? ", " : "");
         if(auto *FD = dyn_cast<AbstractFunctionDecl>(E->getDefaultArgsOwner().getDecl())) {
           if(FD->getParameters()->get(resultArgI)->getDefaultValue()) {
             FD->getParameters()->get(resultArgI)->getDefaultValue()->dump(OS);
           }
+          else OS << "null";
         }
         else {
           llvm_unreachable("abstract function decl expected as getDefaultArgsOwner");
         }
       }
       else if(E->getElementMapping()[resultArgI] == -2) {
-        OS << "[";
-        for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size(); varArgI++) {
+        OS << (resultArgI ? ", " : "") << "[";
+        for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size() && srcArgI < arguments.size(); varArgI++) {
+          if(varArgI) OS << ", ";
           OS << dumpToStr(arguments[srcArgI++]);
         }
         OS << "]";
       }
       else {
-        llvm_unreachable("unsupported element mapping type");
+        OS << (resultArgI ? ", " : "") << "'?3'";
       }
     }
   }
@@ -4325,7 +4335,7 @@ public:
     std::string iString = "{";
     
     bool passSetThis = false;
-    if(isSubscriptAss) passSetThis = true;
+    if(isSubscriptAss) {passSetThis = true; rExpr = lExpr;}
     else if(lDeclrefExpr && rExpr) {
       if (auto *FD = dyn_cast<FuncDecl>(lDeclrefExpr->getDecl())) {
         passSetThis = FD->isMutating();
@@ -4333,6 +4343,7 @@ public:
     }
     
     if(passSetThis) {
+      rExpr = skipInOutExpr(rExpr);
       std::string setStr = handleLAssignment(rExpr, handleRAssignment(rExpr, "$val"));
       iString += "$setThis: $val => " + setStr;
     }
@@ -4542,6 +4553,7 @@ public:
     
     std::string rStr = handleRAssignment(E->getSrc(), dumpToStr(E->getSrc()));
 
+    //TODO handle nested tuples like var declaration
     if(auto *lTuple = dyn_cast<TupleExpr>(E->getDest())) {
       OS << "let $tuple = " << rStr;
       for (unsigned i = 0, e = lTuple->getNumElements(); i != e; ++i) {
