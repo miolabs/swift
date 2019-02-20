@@ -137,7 +137,7 @@ const std::unordered_map<std::string, std::string> LIB_BODIES = {
   {"XCTest.(file).XCTAssertNotNil(_:() throws -> Any?,_:() -> String,file:StaticString,line:UInt)", "if(expression() == undefined) throw message ? message() : 'assert fail :' + expression"},
   {"XCTest.(file).XCTAssertThrowsError(_:() throws -> T,_:() -> String,file:StaticString,line:UInt,_:(Error) -> Void)", "try{expression()}catch(e){return}throw message ? message() : 'assert fail :' + expression"},
   {"XCTest.(file).XCTAssertTrue(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression() != true) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTestCase.init()", "for(const testFunction in this) {\nif(typeof this[testFunction] !== 'function' || XCTestCase.prototype[testFunction]/*is inherited*/ || testFunction.endsWith('$get') || testFunction.endsWith('$set')) continue\nthis.init$vars()\nif(this.setUp) this.setUp()\nif(this.tearDown) this.tearDown()\nthis[testFunction]()\n}"},
+  {"XCTest.(file).XCTestCase.init()", "for(const testFunction in this) {\nif(typeof this[testFunction] !== 'function' || XCTestCase.prototype[testFunction]/*is inherited*/ || testFunction.endsWith('$get') || testFunction.endsWith('$set') || testFunction.endsWith('$filePrivate')) continue\nthis.init$vars()\nif(this.setUp) this.setUp()\nif(this.tearDown) this.tearDown()\nthis[testFunction]()\n}"},
   {"Swift.(file).precondition(_:() -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(!condition()) throw message ? message() : 'assert fail :' + condition"}
 };
 
@@ -161,6 +161,23 @@ const std::unordered_map<std::string, std::string> LIB_MIXINS = {
   {"Swift.(file).Dictionary", "Map"},
   {"Swift.(file).Set", "Set"}
 };
+const std::unordered_map<std::string, bool> JS_LITERALS = {
+  {"Swift.(file).String", false},
+  {"Swift.(file).Bool", false},
+  {"Swift.(file).Double", false},
+  {"Swift.(file).Float", false},
+  {"Swift.(file).Float80", false},
+  {"Swift.(file).Int", false},
+  {"Swift.(file).Int8", false},
+  {"Swift.(file).Int16", false},
+  {"Swift.(file).Int32", false},
+  {"Swift.(file).Int64", false},
+  {"Swift.(file).UInt", false},
+  {"Swift.(file).UInt8", false},
+  {"Swift.(file).UInt16", false},
+  {"Swift.(file).UInt32", false},
+  {"Swift.(file).UInt64", false},
+};
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
   {"Swift.(file).Dictionary", "($info, obj){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
@@ -176,17 +193,12 @@ const std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY = {
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
 
-const std::unordered_map<std::string, bool> REPLACEMENTS_CLONE_STRUCT = {
-  {"Swift.(file).Int", false},
-  {"Swift.(file).String", false},
-  {"Swift.(file).Double", false},
-  {"Swift.(file).Bool", false}
-};
-
 Expr *lAssignmentExpr;
 Expr *functionArgsCall;
 
 std::vector<std::string> optionalCondition = {};
+
+std::vector<AbstractFunctionDecl*> openFunctions;
 
 bool printGenerics = false;
 bool hideGenerics = false;
@@ -351,12 +363,25 @@ std::string handleRAssignment(Expr *rExpr, std::string baseStr) {
     else if (auto *arrayExpr = dyn_cast<ArrayExpr>(rExpr)) {
       isInitializer = true;
     }
-    cloneStruct = !isInitializer && !REPLACEMENTS_CLONE_STRUCT.count(getMemberIdentifier(structDecl));
+    cloneStruct = !isInitializer && !JS_LITERALS.count(getMemberIdentifier(structDecl));
   }
   if(cloneStruct) {
     baseStr = "_cloneStruct(" + baseStr + ")";
   }
   return baseStr;
+}
+
+bool isFilePrivateMethodOfXCTestCase(NominalTypeDecl *ND) {
+  while(true) {
+    if(getMemberIdentifier(ND) == "XCTest.(file).XCTestCase") return true;
+    if(!ND->getInherited().size()) return false;
+    Type Super = ND->getInherited()[0].getType();
+    if(Super->isExistentialType()) return false;
+    if(auto supND = Super->getNominalOrBoundGenericNominal()) {
+      ND = supND;
+    }
+    else return false;
+  }
 }
 
 bool isNative(std::string uniqueIdentifier) {
@@ -371,6 +396,12 @@ std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
         stringifiedOp += "_" + std::to_string(int(userFacingName[i]));
       }
       userFacingName = stringifiedOp;
+    }
+    
+    if(auto *ND = D->getDeclContext()->getSelfNominalTypeDecl()) {
+      if(isFilePrivateMethodOfXCTestCase(ND)) {
+        userFacingName += "$filePrivate";
+      }
     }
     
     functionUniqueNames[uniqueIdentifier] = userFacingName;
@@ -1818,7 +1849,7 @@ namespace {
       std::string tupleInit = "";
       std::vector<std::string> varNames = {};
     };
-    SinglePatternBinding singlePatternBinding(FlattenedPattern &flattened, std::string suffix = "") {
+    SinglePatternBinding singlePatternBinding(FlattenedPattern &flattened, Expr *initExpr) {
       
       SinglePatternBinding info;
       
@@ -1826,8 +1857,9 @@ namespace {
         if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
           auto *VD = namedPattern->getDecl();
           std::string varName = getName(VD);
-          if(suffix != "") {
-            varName += suffix;
+          
+          if(initExpr && dumpToStr(initExpr).find(varName) != std::string::npos) {
+            varName += "_dupl";
             nameReplacementsById[getMemberIdentifier(VD)] = varName;
           }
           
@@ -1895,7 +1927,7 @@ namespace {
       for (auto entry : PBD->getPatternList()) {
         
         auto flattened = flattenPattern(entry.getPattern());
-        auto info = singlePatternBinding(flattened);
+        auto info = singlePatternBinding(flattened, entry.getInit());
         bool withinStruct = info.varDecl && info.varDecl->getDeclContext()->isTypeContext();
         
         if(LIB_GENERATE_MODE) {
@@ -2079,11 +2111,6 @@ namespace {
       if(P->isInOut()) {
         OS << "$inout";
       }
-      
-      if (auto init = P->getDefaultValue()) {
-        OS << " = ";
-        init->dump(OS);
-      }
     }
 
     void printParameterList(const ParameterList *params, const ASTContext *ctx = nullptr) {
@@ -2214,7 +2241,9 @@ namespace {
       else if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
         std::string bodyStr;
         llvm::raw_string_ostream bodyStream(bodyStr);
+        openFunctions.push_back(FD);
         printRec(Body, FD->getASTContext(), bodyStream);
+        openFunctions.pop_back();
         body += "{\n";
         body += generateInOutPrefix(FD);
         body += bodyStream.str();
@@ -2897,7 +2926,7 @@ public:
     std::string initializerStr = "";
     
     auto flattened = PrintDecl(OS).flattenPattern(P);
-    auto info = PrintDecl(OS).singlePatternBinding(flattened, "$let");
+    auto info = PrintDecl(OS).singlePatternBinding(flattened, initExpr);
     initializerStr += info.varPrefix + info.varName;
     if(initializerStr.length()) initializerStr += " = ";
     initializerStr += handleRAssignment(initExpr, dumpToStr(initExpr));
@@ -3570,7 +3599,10 @@ public:
     }
     if(isSelf) {
       if(lAssignmentExpr == E) {
-        string = "Object.assign(this, #ASS)";
+        std::string str;
+        llvm::raw_string_ostream stream(str);
+        stream << openFunctions.back()->getInnermostDeclContext();
+        string = "$info" + stream.str() + ".$setThis(_cloneStruct(#ASS))";
       }
       else {
         string = "this";
@@ -3837,7 +3869,7 @@ public:
     functionArgsCall = skipWrapperExpressions(E->getIndex());
     string = std::regex_replace(string, std::regex("#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
     
-    string = handleInfo(string, E->getBase());
+    string = handleInfo(string, E->getBase(), lAssignmentExpr == E);
     
     OS << string;
   }
@@ -3913,9 +3945,47 @@ public:
       defaultArgsOwner.dump(OS);
     }
 
-    OS << "\n";*/
+    OS << "\n";
     printRec(E->getSubExpr());
-    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    std::vector<Expr*> arguments;
+    
+    if(auto *tupleExpr = dyn_cast<TupleExpr>(E->getSubExpr())) {
+      for (unsigned i = 0, e = tupleExpr->getNumElements(); i != e; ++i) {
+        arguments.push_back(tupleExpr->getElement(i));
+      }
+    }
+    else {
+      arguments.push_back(E->getSubExpr());
+    }
+    
+    for(unsigned resultArgI = 0, srcArgI = 0; resultArgI < E->getElementMapping().size(); resultArgI++) {
+      if(srcArgI) OS << ", ";
+      if(E->getElementMapping()[resultArgI] >= 0) {
+        OS << dumpToStr(arguments[srcArgI++]);
+      }
+      else if(E->getElementMapping()[resultArgI] == -1) {
+        if(auto *FD = dyn_cast<AbstractFunctionDecl>(E->getDefaultArgsOwner().getDecl())) {
+          if(FD->getParameters()->get(resultArgI)->getDefaultValue()) {
+            FD->getParameters()->get(resultArgI)->getDefaultValue()->dump(OS);
+          }
+        }
+        else {
+          llvm_unreachable("abstract function decl expected as getDefaultArgsOwner");
+        }
+      }
+      else if(E->getElementMapping()[resultArgI] == -2) {
+        OS << "[";
+        for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size(); varArgI++) {
+          OS << dumpToStr(arguments[srcArgI++]);
+        }
+        OS << "]";
+      }
+      else {
+        llvm_unreachable("unsupported element mapping type");
+      }
+    }
   }
   void visitUnresolvedTypeConversionExpr(UnresolvedTypeConversionExpr *E) {
     printCommon(E, "unresolvedtype_conversion_expr") << '\n';
@@ -4234,40 +4304,56 @@ public:
     }
   }
   
-  std::string handleInfo(std::string lrString, Expr *lExpr) {
+  std::string handleInfo(std::string lrString, Expr *lExpr, bool isSubscriptAss = false) {
     
-    //not sure if that's exhaustive; we need to get the nested DeclRefExpr
+    if(lrString.find("#I") == std::string::npos) return lrString;
+    
+    //not sure if that's exhaustive; we need to get the nested DeclRefExpr (the function called)
+    Expr *rExpr = nullptr;
     while(true) {
       if (auto *inOutExpr = dyn_cast<InOutExpr>(lExpr)) {
         lExpr = inOutExpr->getSubExpr();
       }
       else if (auto *dotSyntaxCallExpr = dyn_cast<DotSyntaxCallExpr>(lExpr)) {
+        rExpr = dotSyntaxCallExpr->getArg();
         lExpr = dotSyntaxCallExpr->getFn();
       }
       else break;
     }
+    auto lDeclrefExpr = dyn_cast<DeclRefExpr>(lExpr);
     
-    if(lrString.find("#I") != std::string::npos) {
-      std::string iString = "null";
-      if (auto lDeclrefExpr = dyn_cast<DeclRefExpr>(lExpr)) {
-        if (lDeclrefExpr->getDeclRef().isSpecialized()) {
-          iString = "{";
-          auto substitutions = lDeclrefExpr->getDeclRef().getSubstitutions();
-          auto params = substitutions.getGenericSignature()->getGenericParams();
-          int i = 0;
-          for(Type T: substitutions.getReplacementTypes()) {
-            if(i) iString += ", ";
-            iString += params[i]->getName().get();
-            printGenerics = true;
-            iString += ": " + getTypeName(T);
-            printGenerics = false;
-            i++;
-          }
-          iString += "}";
-        }
+    std::string iString = "{";
+    
+    bool passSetThis = false;
+    if(isSubscriptAss) passSetThis = true;
+    else if(lDeclrefExpr && rExpr) {
+      if (auto *FD = dyn_cast<FuncDecl>(lDeclrefExpr->getDecl())) {
+        passSetThis = FD->isMutating();
       }
-      lrString = std::regex_replace(lrString, std::regex("#I"), regex_escape(iString));
     }
+    
+    if(passSetThis) {
+      std::string setStr = handleLAssignment(rExpr, handleRAssignment(rExpr, "$val"));
+      iString += "$setThis: $val => " + setStr;
+    }
+    
+    if (lDeclrefExpr && lDeclrefExpr->getDeclRef().isSpecialized()) {
+      auto substitutions = lDeclrefExpr->getDeclRef().getSubstitutions();
+      auto params = substitutions.getGenericSignature()->getGenericParams();
+      int i = 0;
+      for(Type T: substitutions.getReplacementTypes()) {
+        if(i || passSetThis) iString += ", ";
+        iString += params[i]->getName().get();
+        printGenerics = true;
+        iString += ": " + getTypeName(T);
+        printGenerics = false;
+        i++;
+      }
+    }
+    
+    iString += "}";
+    
+    lrString = std::regex_replace(lrString, std::regex("#I"), regex_escape(iString));
     
     return lrString;
   }
@@ -4454,9 +4540,17 @@ public:
     printRec(E->getSrc());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    std::string rStr = dumpToStr(E->getSrc());
-    
-    OS << handleLAssignment(E->getDest(), handleRAssignment(E->getSrc(), rStr));
+    std::string rStr = handleRAssignment(E->getSrc(), dumpToStr(E->getSrc()));
+
+    if(auto *lTuple = dyn_cast<TupleExpr>(E->getDest())) {
+      OS << "let $tuple = " << rStr;
+      for (unsigned i = 0, e = lTuple->getNumElements(); i != e; ++i) {
+        OS << '\n' + handleLAssignment(lTuple->getElement(i), "$tuple[" + std::to_string(i) + "]");
+      }
+    }
+    else {
+      OS << handleLAssignment(E->getDest(), rStr);
+    }
   }
   void visitEnumIsCaseExpr(EnumIsCaseExpr *E) {
     printCommon(E, "enum_is_case_expr") << ' ' <<
@@ -5418,11 +5512,15 @@ namespace {
         //owningDC->printContext(OS, 0);
         //OS << "*/";
         if (auto extensionDC = dyn_cast<ExtensionDecl>(owningDC)) {
-          //OS << "/*?" << extensionDC->getExtendedNominal()->getInnermostDeclContext() << "?*/";
           owningDC = extensionDC->getExtendedNominal();
         }
         if (auto nominalDC = dyn_cast<NominalTypeDecl>(owningDC)) {
-          OS << "this.";
+          if (openFunctions.size() && openFunctions.back()->isStatic()) {
+            owningDC = openFunctions.back()->getInnermostDeclContext();
+          }
+          else {
+            OS << "this.";
+          }
         }
         OS << "$info";
         if(!PRINT_EXTENSION) OS << owningDC;
