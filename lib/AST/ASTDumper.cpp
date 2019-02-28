@@ -106,7 +106,8 @@ const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
 const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach"};
 
 const std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY = {
-  {"Swift.(file).Array", "toString(){return '[' + this.join(', ') + ']'}"}
+  {"Swift.(file).Array", "toString(){return '[' + this.join(', ') + ']'}"},
+  {"Swift.(file).Collection", "_failEarlyRangeCheckBounds(){}"}
 };
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
