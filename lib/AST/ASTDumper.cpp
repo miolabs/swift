@@ -20,6 +20,7 @@
 #include <iostream>
 #include <vector>
 #include <list>
+#include <fstream>
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTVisitor.h"
@@ -44,102 +45,21 @@
 
 using namespace swift;
 
-const bool LIB_GENERATE_MODE = false;
-const bool GENERATE_STD_LIB = false;
-const bool GENERATE_IMPORTED_MODULE = false;
-const std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/";
+bool LIB_GENERATE_MODE = false;
+bool GENERATE_STD_LIB = false;
+bool GENERATE_IMPORTED_MODULE = false;
+std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/";
 
-const bool PRINT_RANGES = false;
-const bool PRINT_EXTENSION = false;
+bool PRINT_RANGES = false;
+bool PRINT_EXTENSION = false;
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
 const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","throw","catch","final","native","throws","finally","new","class","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","delete","implements","return","volatile","do","import","while","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","radio","confirm","reset","constructor","screenX","crypto","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload", "arguments"};
 
-const std::unordered_map<std::string, std::string> LIB_BODIES = {
-  {"Swift.(file).String.count", "return this.length"},
-  {"Swift.(file).print(_:[Any],separator:String,terminator:String)", "console.log(#A0)"},
-  {"Swift.(file).Dictionary.subscript(_:Dictionary<Key, Value>.Index)", "return this.get(#AA)"},
-  {"Swift.(file).Dictionary.subscript(_:Key)", "return this.get(#AA)"},
-  {"Swift.(file).Dictionary.subscript(_:Key)#ASS", "if(#A0 == null) this.delete(#A1)\nelse this.set(#A1, #A0)"},
-  {"Swift.(file).Dictionary.count", "return this.size"},
-  {"Swift.(file).Dictionary.makeIterator()", "return new SwiftIterator((current) => Array.from(this)[current])"},
-  {"Swift.(file).Array.count", "return this.length"},
-  {"Swift.(file).Array.+infix(_:Array<Element>,_:Array<Element>)", "let r = lhs.concat(rhs)\nr.$info = lhs.$info\nreturn r"},
-  {"Swift.(file).Array.+=infix(_:Array<Element>,_:Array<Element>)", "#A0.get().appendContentsOf(null, #A1)"},
-  {"Swift.(file).Array.append(_:Element)", "this.push(#AA)"},
-  {"Swift.(file).Array.append(contentsOf:S)", "this.push.apply(this, #A0)"},
-  {"Swift.(file).Array.insert(_:Element,at:Int)", "this.splice(#A1, 0, #A0)"},
-  {"Swift.(file).Array.remove(at:Int)", "this.splice(#AA, 1)"},
-  {"Swift.(file).Array.init(repeating:Element,count:Int)", "let result = new Array(count)\nfor(let i = 0; i < count; i++) result[i] = _cloneStruct(repeatedValue)\nreturn result"},
-  {"Swift.(file).Set.insert(_:Element)", "this.add(#AA)"},
-  {"Swift.(file).Set.count", "return this.size"},
-  {"Swift.(file).RangeReplaceableCollection.insert(contentsOf:C,at:Self.Index)", "this.splice.apply(this, [#A1, 0].concat(#A0))"},
-  {"Swift.(file).BidirectionalCollection.joined(separator:String)", "return this.join(#AA)"},
-  {"Swift.(file).Sequence.joined(separator:String)", "return this.join(#AA)"},
-  {"Swift.(file).Collection.makeIterator()", "return new SwiftIterator((current) => this[current])"},
-  {"Swift.(file).Sequence.enumerated()", "return this.map((v, i) => [i, v])"},
-  {"Swift.(file).Sequence.reduce(_:Result,_:(Result, Self.Element) throws -> Result)", "return this.reduce(#A1.bind(null, null), #A0)"},
-  {"Swift.(file)._ArrayProtocol.filter(_:(Self.Element) throws -> Bool)", "return this.filter(#AA.bind(null, null))"},
-  {"Swift.(file).Collection.map(_:(Self.Element) throws -> T)", "let result = this.map(transform.bind(null, null))\nresult.$info = {Element: $info.T}\nreturn result"},
-  {"Swift.(file).Collection.dropFirst(_:Int)", "let result = []\nif(!k) k = 1\nfor(let i = k; i < this.count; i++) result.push(this[i])\nreturn result"},
-  {"Swift.(file).Sequence.sorted(by:(Self.Element, Self.Element) throws -> Bool)", "return _cloneStruct(this).sort((a, b) => areInIncreasingOrder(null, a, b) ? -1 : 1)"},
-  {"Swift.(file).MutableCollection.sort(by:(Self.Element, Self.Element) throws -> Bool)", "return this.sort((a, b) => areInIncreasingOrder(null, a, b) ? -1 : 1)"},
-  {"Swift.(file).??infix(_:T?,_:() throws -> T)", "return #A0 != null ? #A0 : #A1()"},
-  {"Swift.(file).??infix(_:T?,_:() throws -> T?)", "return #A0 != null ? #A0 : #A1()"},
-  {"Swift.(file).~=infix(_:T,_:T)", "return $info.T.infix_61_61($info, #A0, #A1)"},
-  {"Swift.(file).Comparable...<infix(_:Self,_:Self)", "return _create(Range, 'initUncheckedBoundstuple_type', {Bound: $info.Self}, [minimum, maximum])"},
-  {"Swift.(file).Comparable....infix(_:Self,_:Self)", "return _create(ClosedRange, 'initUncheckedBoundstuple_type', {Bound: $info.Self}, [minimum, maximum])"},
-  {"Swift.(file).Range.init(uncheckedBounds:(lower: Bound, upper: Bound))", "this.lowerBound$internal = #AA[0]\nthis.upperBound$internal = #AA[1]"},
-  {"Swift.(file).ClosedRange.init(uncheckedBounds:(lower: Bound, upper: Bound))", "this.lowerBound$internal = #AA[0]\nthis.upperBound$internal = #AA[1]"},
-  {"Swift.(file).Range.lowerBound", "return this.lowerBound$internal"},
-  {"Swift.(file).Range.upperBound", "return this.upperBound$internal"},
-  {"Swift.(file).ClosedRange.lowerBound", "return this.lowerBound$internal"},
-  {"Swift.(file).ClosedRange.upperBound", "return this.upperBound$internal"},
-  {"Swift.(file).RangeExpression.~=infix(_:Self,_:Self.Bound)", "return #A0.contains(null, #A1)"},
-  {"Swift.(file).Range.contains(_:Bound)", "return #AA >= this.lowerBound && #AA < this.upperBound"},
-  {"Swift.(file).ClosedRange.contains(_:Bound)", "return #AA >= this.lowerBound && #AA <= this.upperBound"},
-  {"Swift.(file).Array.init()", "return []"},
-  {"Swift.(file).Dictionary.init()", "return new Map()"},
-  {"Swift.(file).Set.init()", "return new Set()"},
-  {"Swift.(file).Set.init(_:Source)", "return new Set(#AA)"},
-  {"Swift.(file).Array.init()", "return []"},
-  {"Swift.(file).BinaryInteger./infix(_:Self,_:Self)", "return (#A0 / #A1) | 0"},
-  {"Swift.(file).BinaryInteger./=infix(_:Self,_:Self)", "lhs$inout.set((lhs$inout.get() / rhs) | 0)"},
-  {"Swift.(file).Int8.<<infix(_:Int8,_:Int8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += j === 0 ? -128 : Math.pow(2, 7 - j)\n}\nreturn result"},
-  {"Swift.(file).UInt8.<<infix(_:UInt8,_:UInt8)", "let binaryRepr = lhs.toString(2)\nlet result = 0\nfor(let i = 0; i < binaryRepr.length; i++) {\nlet j = i - rhs\nif(binaryRepr[j] !== '1') continue\nresult += Math.pow(2, 7 - j)\n}\nreturn result"},
-  {"Darwin.(file).arc4random_uniform(_:UInt32)", "return (Math.random() * #AA) | 0"},
-  {"Darwin.(file).arc4random()", "return arc4random_uniform(null, 4294967296)"},
-  {"Swift.(file).abs(_:T)", "return Math.abs(#AA)"},
-  {"Swift.(file).min(_:T,_:T,_:T,_:[T])", "let min = x\nif($info.T.infix_60($info, y, min)) min = y\nif(z != null && $info.T.infix_60($info, z, min)) min = z\nif(rest != null)for(let i of rest)if($info.T.infix_60($info, i, min)) min = i\nreturn min"},
-  {"Swift.(file).max(_:T,_:T,_:T,_:[T])", "let max = x\nif($info.T.infix_62($info, y, max)) max = y\nif(z != null && $info.T.infix_62($info, z, max)) max = z\nif(rest != null)for(let i of rest)if($info.T.infix_62($info, i, max)) max = i\nreturn max"},
-  {"Swift.(file).Array.startIndex", "return 0"},
-  {"Swift.(file).Array.endIndex", "return this.length"},
-  {"Swift.(file).Array.==infix(_:Array<Element>,_:Array<Element>)", "if(!lhs) return !rhs\nif(lhs.count != rhs.count) return false\nreturn lhs.every((val, i) => lhs.$info.Element.infix_61_61($info, val, rhs instanceof ClosedRange || rhs instanceof Range ? i + rhs.lowerBound : rhs[i]))"},
-  {"Swift.(file).Array.subscript(_:Range<Int>)", "return this.slice(bounds.first, bounds.last + 1)"},
-  {"Swift.(file).RangeReplaceableCollection.removeSubrange(_:R)", "for(let i = this.count - 1; i >= 0; i--) if(bounds.contains($info, i)) this.splice(i, 1)"},
-  {"Swift.(file).RangeReplaceableCollection.removeLast()", "return this.pop()"},
-  {"Swift.(file).RangeReplaceableCollection.removeLast(_:Int)", "for(let i = 0; i < k; i++) this.removeLast()"},
-  {"Swift.(file).RangeReplaceableCollection.removeFirst()", "return this.shift()"},
-  {"Swift.(file).RangeReplaceableCollection.removeFirst(_:Int)", "for(let i = 0; i < k; i++) this.removeFirst()"},
-  {"Swift.(file).Collection.dropFirst(_:Int)", "let result = []\nfor(let i = k; i < this.count; i++) result.push(this[i])\nreturn result"},
-  {"Swift.(file).Double.infinity", "return Infinity"},
-  {"XCTest.(file).XCTAssert(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(!expression()) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTAssertFalse(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression()) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTAssertGreaterThan(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!$info.T.infix_62($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertGreaterThanOrEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "iif(!$info.T.infix_62_61($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertLessThan(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!$info.T.infix_60($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertLessThanOrEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!$info.T.infix_60_61($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertNil(_:() throws -> Any?,_:() -> String,file:StaticString,line:UInt)", "if(expression() != undefined) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTAssertEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!$info.T.infix_61_61($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertNotEqual(_:() throws -> T,_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "if(!$info.T.infix_33_61($info, expression1(), expression2())) throw message ? message() : 'assert fail :' + expression1"},
-  {"XCTest.(file).XCTAssertNoThrow(_:() throws -> T,_:() -> String,file:StaticString,line:UInt)", "try{expression()}catch(e){throw message ? message() : 'assert fail :' + expression}"},
-  {"XCTest.(file).XCTAssertNotNil(_:() throws -> Any?,_:() -> String,file:StaticString,line:UInt)", "if(expression() == undefined) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTAssertThrowsError(_:() throws -> T,_:() -> String,file:StaticString,line:UInt,_:(Error) -> Void)", "try{expression()}catch(e){return}throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTAssertTrue(_:() throws -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(expression() != true) throw message ? message() : 'assert fail :' + expression"},
-  {"XCTest.(file).XCTestCase.init()", "for(const testFunction in this) {\nif(typeof this[testFunction] !== 'function' || XCTestCase.prototype[testFunction]/*is inherited*/ || testFunction.endsWith('$get') || testFunction.endsWith('$set') || testFunction.endsWith('$filePrivate')) continue\nthis.init$vars()\nif(this.setUp) this.setUp()\nif(this.tearDown) this.tearDown()\nthis[testFunction]()\n}"},
-  {"Swift.(file).precondition(_:() -> Bool,_:() -> String,file:StaticString,line:UInt)", "if(!condition()) throw message ? message() : 'assert fail :' + condition"}
-};
+std::string LIB_BODIES_PATH_MANUAL = "/Users/bubulkowanorka/projects/antlr4-visitor/include/build-bodies/for-compiler/manual.txt";
+std::string LIB_BODIES_PATH_AUTOGENERATED = "/Users/bubulkowanorka/projects/antlr4-visitor/include/build-bodies/for-compiler/generated-by-step-2.txt";
+std::unordered_map<std::string, std::string> LIB_BODIES;
 
 const std::unordered_map<std::string, std::string> LIB_MIXINS = {
   {"Swift.(file).String", "String"},
@@ -162,21 +82,21 @@ const std::unordered_map<std::string, std::string> LIB_MIXINS = {
   {"Swift.(file).Set", "Set"}
 };
 const std::unordered_map<std::string, bool> JS_LITERALS = {
-  {"Swift.(file).String", false},
-  {"Swift.(file).Bool", false},
-  {"Swift.(file).Double", false},
-  {"Swift.(file).Float", false},
-  {"Swift.(file).Float80", false},
-  {"Swift.(file).Int", false},
-  {"Swift.(file).Int8", false},
-  {"Swift.(file).Int16", false},
-  {"Swift.(file).Int32", false},
-  {"Swift.(file).Int64", false},
-  {"Swift.(file).UInt", false},
-  {"Swift.(file).UInt8", false},
-  {"Swift.(file).UInt16", false},
-  {"Swift.(file).UInt32", false},
-  {"Swift.(file).UInt64", false},
+  {"Swift.(file).String", true},
+  {"Swift.(file).Bool", true},
+  {"Swift.(file).Double", true},
+  {"Swift.(file).Float", true},
+  {"Swift.(file).Float80", true},
+  {"Swift.(file).Int", true},
+  {"Swift.(file).Int8", true},
+  {"Swift.(file).Int16", true},
+  {"Swift.(file).Int32", true},
+  {"Swift.(file).Int64", true},
+  {"Swift.(file).UInt", true},
+  {"Swift.(file).UInt8", true},
+  {"Swift.(file).UInt16", true},
+  {"Swift.(file).UInt32", true},
+  {"Swift.(file).UInt64", true}
 };
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
@@ -186,9 +106,7 @@ const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
 const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach"};
 
 const std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY = {
-  {"Swift.(file).Array", "toString(){return '[' + this.join(', ') + ']'}\nget indices(){return _create(Range, 'initUncheckedBoundstuple_type', {Bound: Int}, [0, this.count])}\nget first() { return this[0] }\nget last() { return this[this.length - 1] }"},
-  {"Swift.(file).Range", "suffixFrom($info, start) {\nreturn _create(Range, 'initUncheckedBoundstuple_type', this.$info, [start, this.upperBound])\n}\nget first() { return this.lowerBound }\nget last() { return this.upperBound - 1 }\nmakeIterator(){return new SwiftIterator((current) => this.contains(null, current + this.lowerBound) ? current + this.lowerBound : null)}\nget count() { return this.upperBound - this.lowerBound }"},
-  {"Swift.(file).ClosedRange", "get first() { return this.lowerBound }\nget last() { return this.upperBound }\nreversed(){let result = []\nfor(let i = this.last; i >= this.first; i--) result.push(i)\nreturn result}\nmakeIterator(){return new SwiftIterator((current) => this.contains(null, current + this.lowerBound) ? current + this.lowerBound : null)}\nget count() { return this.upperBound - this.lowerBound + 1 }"}
+  {"Swift.(file).Array", "toString(){return '[' + this.join(', ') + ']'}"}
 };
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
@@ -203,7 +121,9 @@ std::vector<AbstractFunctionDecl*> openFunctions;
 bool printGenerics = false;
 bool hideGenerics = false;
 
-std::vector<std::vector<std::string>> structInitializers;
+std::vector<std::string> structInitializers;
+std::vector<std::string> structTypeAliases;
+std::string libGenerateTypeAliases;
 
 std::unordered_map<std::string, std::string> functionUniqueNames = {
   {"Swift.(file).RandomAccessCollection.subscript(_:Range<Self.Index>)", "subscriptRange"},
@@ -216,7 +136,9 @@ std::unordered_map<std::string, std::string> functionUniqueNames = {
   {"Swift.(file).SetAlgebra.init(_:S)", "initSource"},
   {"Swift.(file).Set.insert(_:ConcreteElement)", "insertConcreteElement"},
   {"Swift.(file).RangeReplaceableCollection.removeLast(_:Int)", "removeLastMultiple"},
-  {"Swift.(file).RangeReplaceableCollection.removeFirst(_:Int)", "removeFirstMultiple"}
+  {"Swift.(file).RangeReplaceableCollection.removeFirst(_:Int)", "removeFirstMultiple"},
+  {"Swift.(file).MutableCollection.subscript(_:(UnboundedRange_) -> ())", "subscriptUnboundedRange"},
+  {"Swift.(file).Collection.subscript(_:(UnboundedRange_) -> ())", "subscriptUnboundedRange"}
 };
 std::unordered_map<std::string, int> functionOverloadedCounts = {
   {"zip", 0},{"va_list", 0},{"_withVaList", 0},{"sequence", 0},{"infix_46_124_61", 0},{"infix_46_94_61", 0},{"infix_46_38_61", 0},{"infix_46_94", 0},{"prefix_46_33", 0},{"infix_46_62", 0},{"replacing", 0},{"infix_46_33_61", 0},{"infix_46_61_61", 0},{"unsafeCastElements", 0},{"quickLookObject", 0},{"_superclassIterator", 0},{"_noSuperclassMirror", 0},{"_isLess", 0},{"_suffix", 0},{"_prefix", 0},{"_dropLast", 0},{"_drop", 0},{"__copyContents", 0},{"__copyToContiguousArray", 0},{"_makeIterator", 0},{"_writeBackMutableSlice", 0},{"_isValid", 0},{"_measureCharacterStrideICU", 0},{"transcodedLength", 0},{"_copy", 0},{"trailSurrogate", 0},{"leadSurrogate", 0},{"_decodeSurrogates", 0},{"getVaList", 0},{"_applyMapping", 0},{"escaped", 0},{"_parseMultipleCodeUnits", 0},{"moveInitializeMemory", 0},{"assumingMemoryBound", 0},{"deinitialize", 0},{"width", 0},{"moveAssign", 0},{"moveInitialize", 0},{"deallocate", 0},{"_mergeRuns", 0},{"release", 0},{"takeRetainedValue", 0},{"takeUnretainedValue", 0},{"toOpaque", 0},{"fromOpaque", 0},{"_numUTF16CodeUnits", 0},{"_continuationPayload", 0},{"_decodeScalar", 0},{"_decodeUTF8", 0},{"_isASCII", 0},{"_isSurrogate", 0},{"_isTrailingSurrogate", 0},{"_encode", 0},{"_createThreadLocalStorage", 0},{"_destroyTLS", 0},{"getUBreakIterator", 0},{"getPointer", 0},{"_loadDestroyTLSCounter", 0},{"_destroyBridgedStorage", 0},{"_isValidArrayIndex", 0},{"repairUTF8", 0},{"_isUTF8MultiByteLeading", 0},{"getCString", 0},{"cString", 0},{"_utf8String", 0},{"_fastCStringContents", 0},{"character", 0},{"_isNSString", 0},{"_postRRCAdjust", 0},{"_cString", 0},{"_getCString", 0},{"make", 0},{"appendInterpolation", 0},{"_toUTF16Indices", 0},{"_toUTF16Offsets", 0},{"_toUTF16Offset", 0},{"getSharedUTF8Start", 0},{"getSmallCount", 0},{"largeMortal", 0},{"largeImmortal", 0},{"small", 0},{"_isValidArraySubscript", 0},{"_findStringSwitchCaseWithCache", 0},{"_slowCompare", 0},{"withNFCCodeUnitsIterator", 0},{"_persistCString", 0},{"_foreignOpaqueCharacterStride", 0},{"_opaqueCharacterStride", 0},{"isOnGraphemeClusterBoundary", 0},{"errorCorrectedScalar", 0},{"foreignErrorCorrectedGrapheme", 0},{"foreignErrorCorrectedUTF16CodeUnit", 0},{"fastUTF8Scalar", 0},{"fastUTF8ScalarLength", 0},{"scalarAlign", 0},{"uniqueNativeReplaceSubrange", 0},{"appendInPlace", 0},{"prepareForAppendInPlace", 0},{"_foreignGrow", 0},{"grow", 0},{"copyUTF8", 0},{"withFastUTF8", 0},{"populateBreadcrumbs", 0},{"getBreadcrumbsPtr", 0},{"foreignHasNormalizationBoundary", 0},{"_binaryCompare", 0},{"_lexicographicalCompare", 0},{"_findDiffIdx", 0},{"_stringCompareSlow", 0},{"_toUTF16Index", 0},{"_stringCompareFastUTF8Abnormal", 0},{"_stringCompareFastUTF8", 0},{"_stringCompareInternal", 0},{"_getDescription", 0},{"_bridgeCocoaString", 0},{"_getCocoaStringPointer", 0},{"_cocoaUTF8Pointer", 0},{"_bridgeTagged", 0},{"_stdlib_isOSVersionAtLeast", 0},{"_unsafeAddressOfCocoaStringClass", 0},{"_cocoaCStringUsingEncodingTrampoline", 0},{"_cocoaHashASCIIBytes", 0},{"_cocoaHashString", 0},{"_cocoaStringCompare", 0},{"_cocoaStringSubscript", 0},{"_cocoaStringCopyCharacters", 0},{"_stdlib_binary_CFStringGetCharactersPtr", 0},{"_stdlib_binary_CFStringCreateCopy", 0},{"withMutableCharacters", 0},{"_isScalar", 0},{"_nativeGetIndex", 0},{"_foreignCount", 0},{"_bridgeCocoaArray", 0},{"_foreignSubscript", 0},{"hasSuffix", 0},{"getGlobalRuntimeFunctionCounters", 0},{"_fromCodeUnits", 0},{"_uncheckedFromUTF16", 0},{"_copyUTF16CodeUnits", 0},{"_lowercaseASCII", 0},{"_dictionaryDownCastConditional", 0},{"_loadPartialUnalignedUInt64LE", 0},{"_uppercaseASCII", 0},{"_slowWithCString", 0},{"increment", 0},{"withCString", 0},{"_numUTF8CodeUnits", 0},{"numericCast", 0},{"decodeCString", 0},{"samePosition", 0},{"_step", 0},{"_findNextRun", 0},{"_nativeCopyUTF16CodeUnits", 0},{"_merge", 0},{"_isUnique_native", 0},{"_setDownCastConditional", 0},{"_setDownCastIndirect", 0},{"delete", 0},{"bridgeElements", 0},{"_initializeBridgedElements", 0},{"_advanceIndex", 0},{"_migrateToNative", 0},{"getBreadcrumb", 0},{"_subtracting", 0},{"isStrictSuperset", 0},{"isSuperset", 0},{"word", 0},{"_stdlib_CFSetGetValues", 0},{"_roundingDownToAlignment", 0},{"isSubset", 0},{"reduce", 0},{"enumerated", 0},{"first", 0},{"_isNativePointer", 0},{"forEach", 0},{"_filter", 0},{"infix_46_62_61", 0},{"advanced", 0},{"shuffled", 0},{"_swift_stdlib_atomicLoadInt", 0},{"_measureRuntimeFunctionCountersDiffs", 0},{"isStrictSubset", 0},{"getNumRuntimeFunctionCounters", 0},{"setPerObjectRuntimeFunctionCountersMode", 0},{"autorelease", 0},{"_checkIndex", 0},{"setObjectRuntimeFunctionCounters", 0},{"_arrayDownCastConditionalIndirect", 0},{"_classify", 0},{"_stdlib_NSSet_allObjects", 0},{"setGlobalRuntimeFunctionCounters", 0},{"getObjectRuntimeFunctionCounters", 0},{"getRuntimeFunctionNameToIndex", 0},{"appendedType", 0},{"setGlobalRuntimeFunctionCountersUpdateHandler", 0},{"removeAll", 0},{"getRuntimeFunctionCountersOffsets", 0},{"_swift_class_getSuperclass", 0},{"_uint64ToString", 0},{"hasNormalizationBoundary", 0},{"find", 0},{"compactMap", 0},{"_int64ToString", 0},{"_float80ToString", 0},{"_float64ToStringImpl", 0},{"_copyCollectionToContiguousArray", 0},{"_float32ToStringImpl", 0},{"isLeadSurrogate", 0},{"nextKey", 0},{"_stdlib_atomicLoadARCRef", 0},{"_getErrorDefaultUserInfo", 0},{"_stdlib_atomicInitializeARCRef", 0},{"_is", 0},{"_arrayConditionalCast", 0},{"getChild", 0},{"removeSubrange", 0},{"_contains_", 0},{"_debugPrint", 0},{"_convertInOutToPointerArgument", 0},{"_print", 0},{"lowercased", 0},{"debugPrint", 0},{"_convertConstStringToUTF8PointerArgument", 0},{"_formIndex", 0},{"predecessor", 0},{"_lock", 0},{"infix_63_63", 0},{"_replPrintLiteralString", 0},{"infix_38_38", 0},{"_diagnoseUnexpectedNilOptional", 0},{"_fromUTF8Repairing", 0},{"member", 0},{"fill", 0},{"fastPathFill", 0},{"_getEnumCaseName", 0},{"encodeIfPresent", 0},{"normalizeWithHeapBuffers", 0},{"foreignErrorCorrectedScalar", 0},{"_float32ToString", 0},{"_combine", 0},{"uncheckedElement", 0},{"toIntMax", 0},{"nextValue", 0},{"_decodeOne", 0},{"_getDisplayStyle", 0},{"get", 0},{"swapEntry", 0},{"swapValuesAt", 0},{"validatedBucket", 0},{"copyAndResize", 0},{"formSquareRoot", 0},{"_makeSwiftNSFastEnumerationState", 0},{"uncheckedDestroy", 0},{"_bridgeAnyObjectToAny", 0},{"_appendingKeyPaths", 0},{"uncheckedValue", 0},{"_bufferedScalar", 0},{"randomElement", 0},{"enableRuntimeFunctionCountersUpdates", 0},{"uncheckedKey", 0},{"_opaqueSummary", 0},{"_bridgeFromObjectiveCAdoptingNativeStorageOf", 0},{"invalidateIndices", 0},{"infix_60_61", 0},{"_boundsCheck", 0},{"bridged", 0},{"swap", 0},{"_reverse", 0},{"shuffle", 0},{"_rawPointerToString", 0},{"getObjCClassInstanceExtents", 0},{"_halfStablePartition", 0},{"_roundingUpBaseToAlignment", 0},{"offset", 0},{"alignment", 0},{"initializeMemory", 0},{"size", 0},{"isKnownUniquelyReferenced", 0},{"_internalInvariantValidBufferClass", 0},{"merging", 0},{"destroy", 0},{"_checkValidBufferClass", 0},{"_usesNativeSwiftReferenceCounting", 0},{"isUniqueReference", 0},{"_normalizedHash", 0},{"disableRuntimeFunctionCountersUpdates", 0},{"_isClassOrObjCExistential", 0},{"tryReallocateUniquelyReferenced", 0},{"withUnsafeMutablePointers", 0},{"create", 0},{"withExtendedLifetime", 0},{"updatePreviousComponentAddr", 0},{"_getKeyPathClassAndInstanceSizeFromPattern", 0},{"_resolveRelativeIndirectableAddress", 0},{"roundUpToPointerAlignment", 0},{"map", 0},{"decode", 0},{"copyContents", 0},{"_walkKeyPathPattern", 0},{"_getClassPlaygroundQuickLook", 0},{"_loadRelativeAddress", 0},{"age", 0},{"_internalInvariantFailure", 0},{"_resolveRelativeAddress", 0},{"_nativeIsEqual", 0},{"infix_38_42", 0},{"visitIntermediateComponentType", 0},{"_withUTF8", 0},{"_reserveCapacityAssumingUniqueBuffer", 0},{"visitOptionalWrapComponent", 0},{"hash", 0},{"visitOptionalForceComponent", 0},{"objectAt", 0},{"visitComputedComponent", 0},{"_isContinuation", 0},{"visitStoredComponent", 0},{"_getCharacters", 0},{"_getTypeByMangledNameInEnvironmentOrContext", 0},{"_swift_getKeyPath", 0},{"hasPrefix", 0},{"partition", 0},{"appending", 0},{"_setAtReferenceWritableKeyPath", 0},{"_getAtKeyPath", 0},{"move", 0},{"_getAtAnyKeyPath", 0},{"validateReservedBits", 0},{"keyEnumerator", 0},{"computeIsASCII", 0},{"storesOnlyElementsOfType", 0},{"_pop", 0},{"_scalarAlign", 0},{"clone", 0},{"_projectReadOnly", 0},{"_dump", 0},{"_withNFCCodeUnits", 0},{"checkSizeConsistency", 0},{"_convertConstArrayToPointerArgument", 0},{"_assumeNonNegative", 0},{"withBuffer", 0},{"setGlobalRuntimeFunctionCountersMode", 0},{"withUTF16CodeUnits", 0},{"_unsafePlus", 0},{"_swift_stdlib_atomicFetchOrInt64", 0},{"_uncheckedSetByte", 0},{"_uncheckedGetByte", 0},{"_stdlib_atomicCompareExchangeStrongPtr", 0},{"largeCocoa", 0},{"_debugPreconditionFailure", 0},{"_toUTF16CodeUnit", 0},{"_maskingAdd", 0},{"_lowBits", 0},{"_convertPointerToPointerArgument", 0},{"withUTF8Buffer", 0},{"_fullShiftRight", 0},{"_joined", 0},{"infix_38_43", 0},{"_foreignCopyUTF8", 0},{"_fatalErrorMessage", 0},{"scale", 0},{"_nonMaskingLeftShift", 0},{"validateUTF8", 0},{"prefix_43", 0},{"_nonMaskingLeftShiftGeneric", 0},{"_nonMaskingRightShift", 0},{"intersection", 0},{"withUnsafeBufferOfObjects", 0},{"preconditionFailure", 0},{"_nonMaskingRightShiftGeneric", 0},{"_getRuntimeFunctionNames", 0},{"_hasBinaryProperty", 0},{"dataCorruptedError", 0},{"infix_38_60_60", 0},{"dumpObjectsRuntimeFunctionPointers", 0},{"withUnsafeBytes", 0},{"infix_38_62_62_61", 0},{"truncatingRemainder", 0},{"_foreignDistance", 0},{"uppercased", 0},{"infix_38_62_62", 0},{"makeIterator", 0},{"multipliedReportingOverflow", 0},{"_isLeadingSurrogate", 0},{"prefix_126", 0},{"withBytes", 0},{"object", 0},{"addingReportingOverflow", 0},{"remainderWithOverflow", 0},{"_print_unlocked", 0},{"_isNotOverlong_E0", 0},{"_exp", 0},{"divideWithOverflow", 0},{"multiplyWithOverflow", 0},{"_description", 0},{"_getChild", 0},{"replace", 0},{"signum", 0},{"quotientAndRemainder", 0},{"assign", 0},{"element", 0},{"_createStringTableCache", 0},{"infix_60_60", 0},{"infix_62_62_61", 0},{"_internalInvariant", 0},{"_getAtPartialKeyPath", 0},{"infix_94_61", 0},{"_getElementSlowPath", 0},{"infix_124_61", 0},{"visitHeader", 0},{"infix_124", 0},{"store", 0},{"infix_38_61", 0},{"_memmove", 0},{"squareRoot", 0},{"_getQuickLookObject", 0},{"infix_38", 0},{"_binaryLogarithm", 0},{"dividingFullWidth", 0},{"normalizeFromSource", 0},{"abs", 0},{"_ascii16", 0},{"_adHocPrint_unlocked", 0},{"nextHole", 0},{"_characterStride", 0},{"previousHole", 0},{"_getTypeByMangledNameInEnvironment", 0},{"_getNormalizedType", 0},{"count", 0},{"bucket", 0},{"superEncoder", 0},{"occupiedBucket", 0},{"_hoistableIsNativeTypeChecked", 0},{"checkOccupied", 0},{"_isImpl", 0},{"_dumpPrint_unlocked", 0},{"_isOccupied", 0},{"storeBytes", 0},{"moveEntry", 0},{"initialize", 0},{"_stdlib_NSObject_isEqual", 0},{"_diagnoseUnexpectedEnumCaseValue", 0},{"readLine", 0},{"infix_62_61", 0},{"compress", 0},{"_setUpCast", 0},{"hashSeed", 0},{"_extract", 0},{"_round", 0},{"_rotateLeft", 0},{"_slideTail", 0},{"combine", 0},{"compare", 0},{"_trueAfterDiagnostics", 0},{"_anyHashableDownCastConditionalIndirect", 0},{"_finalizeRuns", 0},{"merge", 0},{"_minimumMergeRunLength", 0},{"_convertToAnyHashable", 0},{"_unsafeMutableBufferPointerCast", 0},{"_isBridgedNonVerbatimToObjectiveC", 0},{"_identityCast", 0},{"pushDest", 0},{"_makeAnyHashableUpcastingToHashableBaseType", 0},{"_componentBodySize", 0},{"_setDownCastConditionalIndirect", 0},{"unimplemented_utf8_32bit", 0},{"_makeAnyHashableUsingDefaultRepresentation", 0},{"Hashable_isEqual_indirect", 0},{"tryFill", 0},{"_convertToAnyHashableIndirect", 0},{"_dropFirst", 0},{"_hashValue", 0},{"infix_38_60_60_61", 0},{"_isNotOverlong_ED", 0},{"_postAppendAdjust", 0},{"removeLast", 0},{"infix_37_61", 0},{"_instantiateKeyPathBuffer", 0},{"subtractingReportingOverflow", 0},{"infix_37", 0},{"_roundSlowPath", 0},{"withUTF8CodeUnits", 0},{"_isspace_clocale", 0},{"withContiguousStorageIfAvailable", 0},{"isTotallyOrdered", 0},{"_transcode", 0},{"visitOptionalChainComponent", 0},{"suffix", 0},{"rounded", 0},{"_stringCompare", 0},{"_fullShiftLeft", 0},{"minimumMagnitude", 0},{"maximum", 0},{"starts", 0},{"minimum", 0},{"_fromUTF16CodeUnit", 0},{"_parseUnsignedASCII", 0},{"addingProduct", 0},{"_convertMutableArrayToPointerArgument", 0},{"_random", 0},{"insertNew", 0},{"_encodeBitsAsWords", 0},{"bridgedKey", 0},{"formRemainder", 0},{"remainder", 0},{"_float64ToString", 0},{"updateValue", 0},{"append", 0},{"infix_42_61", 0},{"_isNotOverlong_F4", 0},{"infix_42", 0},{"downcast", 0},{"infix_45_61", 0},{"_index", 0},{"negate", 0},{"prefix_45", 0},{"_errorInMain", 0},{"_unexpectedError", 0},{"_bridgeErrorToNSError", 0},{"_growArrayCapacity", 0},{"diff", 0},{"prefix_46_46_46", 0},{"_getErrorEmbeddedNSErrorIndirect", 0},{"_dump_unlocked", 0},{"_bridgeAnythingToObjectiveC", 0},{"_reallocObject", 0},{"infix_61_61_61", 0},{"_conditionallyBridgeFromObjectiveC_bridgeable", 0},{"convert", 0},{"_arrayForceCast", 0},{"_unlock", 0},{"_canBeClass", 0},{"_isValidAddress", 0},{"resize", 0},{"_withVerbatimBridgedUnsafeBuffer", 0},{"_dumpSuperclass_unlocked", 0},{"_dictionaryDownCastIndirect", 0},{"take", 0},{"isUniquelyReferencedUnflaggedNative", 0},{"_getUnownedRetainCount", 0},{"isEqual", 0},{"enumerateKeysAndObjects", 0},{"returnsAutoreleased", 0},{"assertionFailure", 0},{"swapAt", 0},{"_getErrorDomainNSString", 0},{"infix_43", 0},{"copy", 0},{"union", 0},{"_maskingSubtract", 0},{"bridgeValues", 0},{"_isReleaseAssertConfiguration", 0},{"superDecoder", 0},{"bridgeKeys", 0},{"nextObject", 0},{"copyMemory", 0},{"isDisjoint", 0},{"infix_94", 0},{"_getTypeName", 0},{"_getDefaultErrorCode", 0},{"_setAtWritableKeyPath", 0},{"fetchAndOr", 0},{"_float80ToStringImpl", 0},{"_stdlib_NSDictionary_allKeys", 0},{"setValue", 0},{"addAndFetch", 0},{"transcoded", 0},{"_customRemoveLast", 0},{"_initStorageHeader", 0},{"postfix_46_46_46", 0},{"value", 0},{"_create", 0},{"fatalError", 0},{"removeValue", 0},{"compactMapValues", 0},{"_getWeakRetainCount", 0},{"_stringForPrintObject", 0},{"stringForPrintObject", 0},{"withUnsafeBufferPointer", 0},{"shouldExpand", 0},{"isMultiple", 0},{"_getErrorEmbeddedNSError", 0},{"isClass", 0},{"allSatisfy", 0},{"getChildStatus", 0},{"relative", 0},{"add", 0},{"finish", 0},{"_mergeTopRuns", 0},{"_compactMap", 0},{"_castOutputBuffer", 0},{"_deallocateUninitializedArray", 0},{"addWithExistingCapacity", 0},{"_log10", 0},{"_foreignIndex", 0},{"_typeByName", 0},{"asObjectIdentifier", 0},{"withUnsafePointer", 0},{"joined", 0},{"_copySequenceToContiguousArray", 0},{"_getTypeByMangledNameUntrusted", 0},{"dropFirst", 0},{"_fatalErrorFlags", 0},{"_dictionaryDownCast", 0},{"_nativeObject", 0},{"firstIndex", 0},{"_withVerbatimBridgedUnsafeBufferImpl", 0},{"canStoreElements", 0},{"_decodeSurrogatePair", 0},{"_int64ToStringImpl", 0},{"_getNonVerbatimBridgingBuffer", 0},{"_uncheckedFromUTF8", 0},{"_getNonVerbatimBridgedCount", 0},{"clamped", 0},{"_isBitwiseTakable", 0},{"symmetricDifference", 0},{"infix_47", 0},{"contiguousStorage", 0},{"_dictionaryDownCastConditionalIndirect", 0},{"prefix_46_46_60", 0},{"infix_61_61", 0},{"remainderReportingOverflow", 0},{"fetchAndAdd", 0},{"mapValues", 0},{"isMutableAndUniquelyReferenced", 0},{"infix_46_46_60", 0},{"infix_46_46_46", 0},{"wordCount", 0},{"_scalarName", 0},{"_getErrorCode", 0},{"prefix", 0},{"_unsafeBufferPointerCast", 0},{"drop", 0},{"_advanceForward", 0},{"_customLastIndexOfEquatableElement", 0},{"_getErrorUserInfoNSDictionary", 0},{"_customIndexOfEquatableElement", 0},{"_value", 0},{"subtract", 0},{"formUnion", 0},{"decodeIfPresent", 0},{"_arrayAppendSequence", 0},{"_cPointerArgs", 0},{"infix_47_61", 0},{"_rawHashValue", 0},{"decodeNil", 0},{"_fromInvalidUTF16", 0},{"_resolveKeyPathMetadataReference", 0},{"infix_38_42_61", 0},{"infix_38_43_61", 0},{"_swift_stdlib_atomicFetchAddInt32", 0},{"isOccupied", 0},{"join", 0},{"encodeConditional", 0},{"_bytesToUInt64", 0},{"encodeNil", 0},{"_makeBridgeObject", 0},{"singleValueContainer", 0},{"infix_46_60_61", 0},{"_setDownCast", 0},{"_withUninitializedString", 0},{"_stdlib_initializeReturnAutoreleased", 0},{"_initializeBridgedValues", 0},{"objectEnumerator", 0},{"requestNativeBuffer", 0},{"elementsEqual", 0},{"_isNotOverlong_F0", 0},{"_initializeBridgedKeys", 0},{"_forceBridgeFromObjectiveC", 0},{"_dictionaryUpCast", 0},{"_forEach", 0},{"mapError", 0},{"flatMap", 0},{"infix_126_61", 0},{"write", 0},{"_isFastAssertConfiguration", 0},{"infix_124_124", 0},{"_debuggerTestingCheckExpect", 0},{"_isOptional", 0},{"infix_60", 0},{"validate", 0},{"_invariantCheck", 0},{"dumpDiff", 0},{"_rint", 0},{"_modifyAtReferenceWritableKeyPath_impl", 0},{"dump", 0},{"_unsafeMinus", 0},{"_nearbyint", 0},{"_log2", 0},{"encoded", 0},{"_copyToContiguousArray", 0},{"_unimplementedInitializer", 0},{"lookup", 0},{"_uint64ToStringImpl", 0},{"contains", 0},{"checkValue", 0},{"capacity", 0},{"_nativeGetOffset", 0},{"_getChildCount", 0},{"_swift_stdlib_atomicFetchAndInt64", 0},{"_exp2", 0},{"unkeyedContainer", 0},{"countByEnumerating", 0},{"_invalidLength", 0},{"getCharacters", 0},{"_forceBridgeFromObjectiveC_bridgeable", 0},{"_isPowerOf2", 0},{"popLast", 0},{"_cos", 0},{"print", 0},{"_isPOD", 0},{"isLess", 0},{"bindMemory", 0},{"_customContainsEquatableElement", 0},{"_isUnique", 0},{"_outlinedMakeUniqueBuffer", 0},{"_makeNativeBridgeObject", 0},{"_hash", 0},{"sorted", 0},{"_bridgeObject", 0},{"_isASCII_cmp", 0},{"update", 0},{"addProduct", 0},{"_copyToNewBuffer", 0},{"_openExistential", 0},{"_getNonTagBits", 0},{"allocate", 0},{"appendLiteral", 0},{"_isNonTaggedObjCPointer", 0},{"ELEMENT_TYPE_OF_SET_VIOLATES_HASHABLE_REQUIREMENTS", 0},{"cast", 0},{"_nonPointerBits", 0},{"_projectMutableAddress", 0},{"_stdlib_binary_CFStringGetLength", 0},{"_bitPattern", 0},{"errorCorrectedCharacter", 0},{"infix_33_61", 0},{"_cocoaPath", 0},{"_class_getInstancePositiveExtentSize", 0},{"_abstract", 0},{"getSwiftClassInstanceExtents", 0},{"infix_33_61_61", 0},{"_uncheckedUnsafeAssume", 0},{"_utf8ScalarLength", 0},{"popFirst", 0},{"uncheckedInsert", 0},{"lexicographicallyPrecedes", 0},{"_onFastPath", 0},{"_roundingUpToAlignment", 0},{"withoutActuallyEscaping", 0},{"_slowPath", 0},{"_parseASCIISlowPath", 0},{"_roundUpImpl", 0},{"_getUnsafePointerToStoredProperties", 0},{"unsafeDowncast", 0},{"reserveCapacity", 0},{"_ensureBidirectional", 0},{"_bridgeAnythingNonVerbatimToObjectiveC", 0},{"printForDebuggerImpl", 0},{"_typeCheck", 0},{"_conditionallyUnreachable", 0},{"_withUnsafeGuaranteedRef", 0},{"_overflowChecked", 0},{"init", 0},{"_next", 0},{"_reinterpretCastToAnyObject", 0},{"_isUniquelyReferenced", 0},{"_makeCollectionDescription", 0},{"key", 0},{"_bridgeToObjectiveCImpl", 0},{"unsafeBitCast", 0},{"passRetained", 0},{"_roundUp", 0},{"_getTypeByMangledNameInContext", 0},{"isUniquelyReferencedNative", 0},{"_getBridgedNonVerbatimObjectiveCType", 0},{"_assertionFailure", 0},{"_isBridgedToObjectiveC", 0},{"_bridgeNonVerbatimFromObjectiveCConditional", 0},{"asObjectAddress", 0},{"toUIntMax", 0},{"_swift_stdlib_atomicFetchXorInt64", 0},{"_makeKeyValuePairDescription", 0},{"_getElementAddress", 0},{"_bridgeNonVerbatimBoxedValue", 0},{"_failEarlyRangeCheck", 0},{"_arrayOutOfPlaceUpdate", 0},{"_memcpy", 0},{"_firstOccupiedBucket", 0},{"passUnretained", 0},{"transcode", 0},{"_key", 0},{"infix_45", 0},{"_checkValidSubscript", 0},{"_unconditionallyBridgeFromObjectiveC", 0},{"maximumMagnitude", 0},{"toggle", 0},{"withUnsafeMutablePointer", 0},{"subtracting", 0},{"getSmallIsASCII", 0},{"load", 0},{"_typeCheckSlowPath", 0},{"intersecting", 0},{"uncheckedRemove", 0},{"_sin", 0},{"Hashable_hashValue_indirect", 0},{"withUnsafeMutablePointerToHeader", 0},{"_adoptStorage", 0},{"prefix_33", 0},{"_delete", 0},{"_getBridgedObjectiveCType", 0},{"stride", 0},{"uncheckedInitialize", 0},{"isTrailSurrogate", 0},{"parseScalar", 0},{"nestedContainer", 0},{"_modifyAtWritableKeyPath_impl", 0},{"uncheckedContains", 0},{"fetchAndAnd", 0},{"_checkSubscript", 0},{"isValid", 0},{"split", 0},{"ensureUnique", 0},{"_hasGraphemeBreakBetween", 0},{"bit", 0},{"_fastPath", 0},{"withUnsafeMutablePointerToElements", 0},{"_getSymbolicMangledNameLength", 0},{"_preconditionFailure", 0},{"replaceSubrange", 0},{"formIntersection", 0},{"isLessThanOrEqualTo", 0},{"_unreachable", 0},{"withMemoryRebound", 0},{"reversed", 0},{"dividedReportingOverflow", 0},{"lastIndex", 0},{"xorAndFetch", 0},{"_bridgeToObjectiveC", 0},{"_resolveKeyPathGenericArgReference", 0},{"max", 0},{"_distance", 0},{"_getObjCTypeEncoding", 0},{"sort", 0},{"removeFirst", 0},{"_swift_isClassOrObjCExistentialType", 0},{"getRuntimeFunctionNames", 0},{"_checkInoutAndNativeTypeCheckedBounds", 0},{"_nullCodeUnitOffset", 0},{"_convert", 0},{"_foreignAppendInPlace", 0},{"_swift_stdlib_atomicFetchXorInt32", 0},{"_expectEnd", 0},{"_swift_stdlib_atomicFetchOrInt", 0},{"formIndex", 0},{"withContiguousMutableStorageIfAvailable", 0},{"_unsafeDowncastToAnyObject", 0},{"ivarCount", 0},{"withUTF8", 0},{"_swift_stdlib_atomicFetchAndInt32", 0},{"_insertionSort", 0},{"_swift_stdlib_atomicFetchAndInt", 0},{"_swift_stdlib_atomicStoreInt", 0},{"_isDebugAssertConfiguration", 0},{"infix_43_61", 0},{"_swift_stdlib_atomicCompareExchangeStrongInt", 0},{"formSymmetricDifference", 0},{"_swift_stdlib_atomicFetchAddInt64", 0},{"withUnsafeMutableBufferPointer", 0},{"_deallocateUninitialized", 0},{"orAndFetch", 0},{"compareExchange", 0},{"_allASCII", 0},{"fetchAndXor", 0},{"withFastCChar", 0},{"_undefined", 0},{"__customContainsEquatableElement", 0},{"infix_38_45", 0},{"_tryToAppendKeyPaths", 0},{"precondition", 0},{"_findStringSwitchCase", 0},{"_getRetainCount", 0},{"last", 0},{"infix_62", 0},{"_unsafeReferenceCast", 0},{"_allocateBufferUninitialized", 0},{"_debugPrecondition", 0},{"_getForeignCodeUnit", 0},{"clear", 0},{"_makeMutableAndUnique", 0},{"_isObjCTaggedPointer", 0},{"_unsafeUnbox", 0},{"_precondition", 0},{"_isDisjoint", 0},{"_swift_stdlib_atomicFetchAddInt", 0},{"_fromASCII", 0},{"overlaps", 0},{"_cocoaGetCStringTrampoline", 0},{"finishWithOriginalCount", 0},{"collectAllReferencesInsideObject", 0},{"addWithOverflow", 0},{"finalize", 0},{"encode", 0},{"_unsafeInsertNew", 0},{"withMutableCapacity", 0},{"type", 0},{"round", 0},{"_parseASCII", 0},{"_checkInoutAndNativeBounds", 0},{"_slowUTF8CString", 0},{"_subtract", 0},{"_unsafeUncheckedDowncast", 0},{"_partitionImpl", 0},{"requestUniqueMutableBackingBuffer", 0},{"_getEmbeddedNSError", 0},{"_collectReferencesInsideObject", 0},{"_forceCreateUniqueMutableBufferImpl", 0},{"mutatingFind", 0},{"retain", 0},{"infix_60_60_61", 0},{"assert", 0},{"determineCodeUnitCapacity", 0},{"bridgedElement", 0},{"getObjects", 0},{"_downCastConditional", 0},{"_allocateUninitialized", 0},{"_branchHint", 0},{"_isEqual", 0},{"reserveCapacityForAppend", 0},{"_toCustomAnyHashable", 0},{"_debugPrint_unlocked", 0},{"_map", 0},{"nestedUnkeyedContainer", 0},{"remove", 0},{"multipliedFullWidth", 0},{"foreignScalarAlign", 0},{"_swift_stdlib_atomicFetchXorInt", 0},{"_writeASCII", 0},{"_tryNormalize", 0},{"_asciiDigit", 0},{"_withUnsafeMutableBufferPointerIfSupported", 0},{"_log", 0},{"_conditionallyBridgeFromObjectiveC", 0},{"_checkSubscript_native", 0},{"_tryFromUTF8", 0},{"container", 0},{"_makeUniqueAndReserveCapacityIfNotUnique", 0},{"infix_38_45_61", 0},{"infix_46_60", 0},{"hashValue", 0},{"asStringRepresentation", 0},{"_appendElementAssumeUniqueAndCapacity", 0},{"_replDebugPrintln", 0},{"isOnUnicodeScalarBoundary", 0},{"_arrayOutOfPlaceReplace", 0},{"_stableSortImpl", 0},{"withUnsafeMutableBytes", 0},{"withNFCCodeUnitsIterator_2", 0},{"formTruncatingRemainder", 0},{"infix_46_38", 0},{"min", 0},{"_collectAllReferencesInsideObjectImpl", 0},{"ensureUniqueNative", 0},{"successor", 0},{"_unbox", 0},{"_makeObjCBridgeObject", 0},{"idealBucket", 0},{"subtractWithOverflow", 0},{"_getSuperclass", 0},{"_insert", 0},{"index", 0},{"copyBytes", 0},{"_typeName", 0},{"_stringCompareWithSmolCheck", 0},{"_isBridgedVerbatimToObjectiveC", 0},{"infix_46_124", 0},{"_fixLifetime", 0},{"insert", 0},{"repeatElement", 0},{"_bridgeNonVerbatimFromObjectiveCToAny", 0},{"random", 0},{"withVaList", 0},{"_swift_bufferAllocate", 0},{"_isStdlibInternalChecksEnabled", 0},{"_getCapacity", 0},{"_getCount", 0},{"reverse", 0},{"next", 0},{"_arrayDownCastIndirect", 0},{"KEY_TYPE_OF_DICTIONARY_VIOLATES_HASHABLE_REQUIREMENTS", 0},{"_fromSubstring", 0},{"_foreignIsWithin", 0},{"_diagnoseUnexpectedEnumCase", 0},{"dropLast", 0},{"_bridgeNonVerbatimFromObjectiveC", 0},{"_forceCreateUniqueMutableBuffer", 0},{"_finalize", 0},{"getElement", 0},{"infix_62_62", 0},{"descendant", 0},{"_swift_stdlib_atomicFetchOrInt32", 0},{"_isTaggedObject", 0},{"_withUnsafeBufferPointerToUTF8", 0},{"filter", 0},{"isContinuation", 0},{"distance", 0},{"flatMapError", 0},{"subscript", 0},{"_findBoundary", 0},{"_copyContents", 0},{"_asCocoaArray", 0},{"isUniquelyReferenced", 0},{"_getElement", 0},{"_autorelease", 0},{"andAndFetch", 0},{"_allocateUninitializedArray", 0}
@@ -602,6 +524,8 @@ std::string printGenericParams(GenericParamList *genericParams) {
 
 std::unordered_map<OpaqueValueExpr*, Expr*> opaqueValueReplacements;
 std::unordered_map<TypeBase*, Expr*> opaqueValueTypeReplacements;
+
+bool printProtocolAsImplementation = false;
 
 struct TerminalColor {
   llvm::raw_ostream::Colors Color;
@@ -1214,18 +1138,46 @@ namespace {
       }
       printInherited(TAD->getInherited());
       OS << "')";*/
-      if(LIB_GENERATE_MODE) return;
       
+      printProtocolAsImplementation = true;
+
+      if(LIB_GENERATE_MODE && TAD->getDeclContext()->isTypeContext()) {
+        if(TAD->getUnderlyingTypeLoc().getType()) {
+          if(auto *VD = dyn_cast<NominalTypeDecl>(TAD->getDeclContext()->getAsDecl())) {
+            libGenerateTypeAliases += '\n' + getTypeName(VD->getDeclaredType()) + '.' + getName(TAD) + " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+          }
+          else if(auto *ED = dyn_cast<ExtensionDecl>(TAD->getDeclContext()->getAsDecl())) {
+            libGenerateTypeAliases += '\n' + getTypeName(ED->getExtendedType()) + '.' + getName(TAD) + " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+          }
+        }
+        printProtocolAsImplementation = false;
+        return;
+      }
+      
+      std::string str;
       if(TAD->getDeclContext()->isTypeContext()) {
-        OS << "static readonly ";
+        str += "static readonly ";
       }
       else {
-        OS << "const ";
+        str += "const ";
       }
-      OS << getName(TAD);
+      str += getName(TAD);
       if (TAD->getUnderlyingTypeLoc().getType()) {
-        OS << " = " << getTypeName(TAD->getUnderlyingTypeLoc().getType());
+        if(LIB_GENERATE_MODE) {
+          str += " = " + std::regex_replace(getTypeName(TAD->getUnderlyingTypeLoc().getType()), std::regex("MIO_Mixin_"), "");
+        }
+        else {
+          str += " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+        }
       }
+      
+      if(TAD->getDeclContext()->isTypeContext()) {
+        structTypeAliases.back() += "\n" + str;
+      }
+      else {
+        OS << str;
+      }
+      printProtocolAsImplementation = false;
     }
 
     void printAbstractTypeParamCommon(AbstractTypeParamDecl *decl,
@@ -1392,6 +1344,7 @@ namespace {
       std::unordered_map<ValueDecl*, std::vector<std::string>> allMembers;
       std::list<ValueDecl*> orderedList;
       std::list<ValueDecl*> unorderedList;
+      std::string typeAliasList;
       
       for (Decl *D : displayDecls) {
         std::string outName;
@@ -1400,8 +1353,9 @@ namespace {
           outName = getName(VD);
           if(auto *NVD = dyn_cast<NominalTypeDecl>(VD)) {
             std::vector<std::string> allMembersStr;
-            for(auto member : getAllMembers(NVD, true).inherited) {
-              std::string name = getTypeName(member);
+            auto gotAllMembers = getAllMembers(NVD, true);
+            for(auto inherited : gotAllMembers.inherited) {
+              std::string name = getTypeName(inherited);
               //TODO understand protocol compositions
               if(name == "Codable") {
                 allMembersStr.push_back("Decodable");
@@ -1414,22 +1368,9 @@ namespace {
             allMembers[NVD] = allMembersStr;
             unorderedList.push_back(NVD);
           }
-          /*else if(auto *TAD = dyn_cast<TypeAliasDecl>(VD)) {
-            OS << "\n!" << getName(TAD);
-            std::vector<std::string> allMembersStr;
-            if (TAD->getUnderlyingTypeLoc().getType()) {
-              //bodge way to get needed types by matching words in type name
-              std::smatch sm;
-              OS << "  " << getTypeName(TAD->getUnderlyingTypeLoc().getType());
-              std::regex_match (getTypeName(TAD->getUnderlyingTypeLoc().getType()), sm, std::regex("[A-Za-z0-9_]+"));
-              for(auto match : sm) {
-                OS << "  " << match;
-                allMembersStr.push_back(match);
-              }
-            }
-            allMembers[NVD] = allMembersStr;
-            unorderedList.push_back(TAD);
-          }*/
+          else if(auto *TAD = dyn_cast<TypeAliasDecl>(VD)) {
+            typeAliasList += "'" + std::regex_replace(outName, std::regex("MIO_Mixin_"), "") + "',";
+          }
           else {
             orderFile << "'" << std::regex_replace(outName, std::regex("MIO_Mixin_"), "") << "',";
           }
@@ -1456,7 +1397,11 @@ namespace {
           for(auto inherited : allMembers[NVD]) {
             bool inheritedPresent = true;
             for(auto unordered : unorderedList) {
-              if(getName(unordered) == inherited) {inheritedPresent = false;break;}
+              if(getName(unordered) == inherited) {
+                std::cout << '!' << inherited;
+                inheritedPresent = false;
+                break;
+              }
             }
             if(!inheritedPresent) {allPresent = false;break;}
           }
@@ -1470,6 +1415,13 @@ namespace {
       for (auto *D : orderedList) {
         orderFile << "'" << std::regex_replace(getName(D), std::regex("MIO_Mixin_"), "") << "',";
       }
+      orderFile << typeAliasList;
+      orderFile << "'typeAliases'";
+      
+      std::error_code OutErrorInfoTypeAliases;
+      llvm::raw_fd_ostream typeAliasesFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/typeAliases.ts"), OutErrorInfoTypeAliases, llvm::sys::fs::F_None);
+      typeAliasesFile << std::regex_replace(libGenerateTypeAliases, std::regex("MIO_Mixin_"), "");
+      typeAliasesFile.close();
       
       std::error_code OutErrorInfoOverloadedCounts;
       llvm::raw_fd_ostream overloadedCountsFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/libFunctionOverloadedCounts.txt"), OutErrorInfoOverloadedCounts, llvm::sys::fs::F_None);
@@ -1480,7 +1432,7 @@ namespace {
       orderFile.close();
     }
     
-    void printRange(ValueDecl *VD, bool isTypeContext = false) {
+    void printRange(ValueDecl *VD, bool isTypeContext = false, ExtensionDecl *ED = nullptr) {
       if(VD->getFormalAccess() < AccessLevel::Public) return;
       if(!getName(VD).length() || getName(VD)[0] == '_') return;
       auto R = VD->getSourceRange();
@@ -1489,7 +1441,22 @@ namespace {
         OS << getMemberIdentifier(VD) << "\",\"";
         R.Start.print(OS, VD->getASTContext().SourceMgr);
         OS << "\",\"";
-        R.End.print(OS, VD->getASTContext().SourceMgr);
+        bool outputEnd = true;
+        if(auto *varDecl = dyn_cast<VarDecl>(VD)) {
+          auto BR = varDecl->getBracesRange();
+          if (BR.isValid()) {
+            BR.End.print(OS, VD->getASTContext().SourceMgr);
+            outputEnd = false;
+          }
+        }
+        if(outputEnd) R.End.print(OS, VD->getASTContext().SourceMgr);
+        OS << "\",\"";
+        if(ED) {
+          auto EDR = ED->getSourceRange();
+          if (EDR.isValid()) {
+            EDR.Start.print(OS, ED->getASTContext().SourceMgr);
+          }
+        }
         OS << "\",";
       }
     }
@@ -1499,6 +1466,59 @@ namespace {
       PrintWithColorRAII(OS, ParenthesisColor) << '(';
       PrintWithColorRAII(OS, ASTNodeColor) << "source_file ";
       PrintWithColorRAII(OS, LocationColor) << '\"' << SF.getFilename() << '\"';*/
+      
+      bool skipCommand = false;
+      if(SF.Decls.front()) {
+        if(auto *TLCD = dyn_cast<TopLevelCodeDecl>(SF.Decls.front())) {
+          if(TLCD->getBody()) {
+            if(TLCD->getBody()->getElements().front()) {
+              if (auto *expr = TLCD->getBody()->getElements().front().dyn_cast<Expr*>()) {
+                if (auto *stringExpr = dyn_cast<StringLiteralExpr>(expr)) {
+                  std::string command;
+                  llvm::raw_string_ostream commandStream(command);
+                  commandStream << QuotedString(stringExpr->getValue());
+                  commandStream.flush();
+                  if(command == "\"-generate-std-lib\"") {
+                    LIB_GENERATE_MODE = GENERATE_STD_LIB = skipCommand = true;
+                  }
+                  else if(command == "\"-generate-imported-module\"") {
+                    LIB_GENERATE_MODE = GENERATE_IMPORTED_MODULE = skipCommand = true;
+                  }
+                  else if(command == "\"-print-ranges\"") {
+                    PRINT_RANGES = skipCommand = true;
+                  }
+                  else if(command == "\"-print-extension\"") {
+                    PRINT_EXTENSION = skipCommand = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if(LIB_GENERATE_MODE) {
+        for(int i = 0; i < 2; i++) {
+          std::ifstream infile(i ? LIB_BODIES_PATH_AUTOGENERATED : LIB_BODIES_PATH_MANUAL);
+          std::string line, key, val;
+          while (std::getline(infile, line)) {
+            bool lineIsKey = line.length() > 4 && line[0] == '-' && line[1] == '-' && line[2] == '-' && line[3] == '-';
+            if(lineIsKey) {
+              if(key.length()) {
+                if(!LIB_BODIES.count(key)) {
+                  LIB_BODIES[key] = val;
+                }
+              }
+              key = line.substr(4);
+              val = "";
+            }
+            else {
+              if(val.length()) val += '\n';
+              val += line;
+            }
+          }
+        }
+      }
       
       if(GENERATE_STD_LIB) {
         generateLibForModule(SF.getASTContext().getStdlibModule());
@@ -1517,7 +1537,7 @@ namespace {
           else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
             for (Decl *subD : ED->getMembers()) {
               if (auto *VD = dyn_cast<ValueDecl>(subD)) {
-                printRange(VD, true);
+                printRange(VD, true, ED);
               }
             }
           }
@@ -1530,6 +1550,8 @@ namespace {
         for (Decl *D : SF.Decls) {
           /*if (D->isImplicit())
            continue;*/
+          
+          if(skipCommand) {skipCommand = false;continue;}
           
           OS << '\n';
           printRec(D);
@@ -1637,7 +1659,8 @@ namespace {
       std::list<std::string> implementedProtocols;
       Decl* lastNonExtensionMember = all.lastNonExtensionMember;
       
-      structInitializers.push_back({});
+      structInitializers.push_back("");
+      structTypeAliases.push_back("");
       
       std::string name = getName(D);
       std::string nestedName = getTypeName(D->getDeclaredType());
@@ -1718,6 +1741,16 @@ namespace {
         if(shouldPrintBefore) printRec(subD);
       }
       
+      if(structTypeAliases.back().length()) {
+        if(kind == "protocol" && !protocolImplementation) {
+          OS << "\n}\n";
+          printAnyStructSignature("class", name + "$implementation", D);
+          OS << "{";
+          protocolImplementation = true;
+        }
+        OS << structTypeAliases.back();
+      }
+      
       if(!LIB_GENERATE_MODE && kind == "enum") {
         OS << "\nstatic infix_61_61($info, a, b){return (a && a.rawValue) == (b && b.rawValue)}";
         OS << "\nstatic infix_33_61($info, a, b){return (a && a.rawValue) != (b && b.rawValue)}";
@@ -1726,9 +1759,7 @@ namespace {
       if(kind != "protocol") {
         OS << "\ninit$vars() {";
         if(wasClass) OS << "\nif(super.init$vars)super.init$vars()";
-        for(std::string initStr : structInitializers.back()) {
-          OS << "\n" << initStr;
-        }
+        OS << structInitializers.back();
         OS << "\n}";
       }
       
@@ -1763,6 +1794,7 @@ namespace {
       }
       
       structInitializers.pop_back();
+      structTypeAliases.pop_back();
     }
 
     void visitStructDecl(StructDecl *SD) {
@@ -1936,6 +1968,7 @@ namespace {
         auto flattened = flattenPattern(entry.getPattern());
         auto info = singlePatternBinding(flattened, entry.getInit());
         bool withinStruct = info.varDecl && info.varDecl->getDeclContext()->isTypeContext();
+        bool isProtocol = withinStruct && info.varDecl->getDeclContext()->getSelfProtocolDecl() && !info.varDecl->getDeclContext()->getExtendedProtocolDecl();
         
         if(LIB_GENERATE_MODE) {
           if(info.varName[0] == '_') continue;
@@ -1949,7 +1982,7 @@ namespace {
           }
         }
         
-        if((!isOverriden || entry.getInit()) && !LIB_GENERATE_MODE) {
+        if((!isOverriden || entry.getInit()) && (!LIB_GENERATE_MODE || isProtocol)) {
           std::string varDecl;
           if(info.varDecl) {
             varDecl += info.varPrefix + info.varName;
@@ -1957,14 +1990,14 @@ namespace {
           else {
             varDecl += "\n const _";
           }
-          if(withinStruct && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
+          if(withinStruct && !isProtocol) {
             varDecl += "$internal";
           }
           OS << "\n" + varDecl;
           if(entry.getInit()) {
             std::string initStr = " = " + handleRAssignment(entry.getInit(), dumpToStr(entry.getInit()));
             if(withinStruct && info.varPrefix == "") {
-              structInitializers.back().push_back("this." + varDecl + initStr);
+              structInitializers.back() += "\nthis." + varDecl + initStr;
             }
             else {
               OS << initStr;
@@ -1972,7 +2005,7 @@ namespace {
           }
         }
         
-        if(withinStruct && !info.varDecl->getDeclContext()->getSelfProtocolDecl()) {
+        if(withinStruct && !isProtocol) {
           std::string internalGetVar = "this." + info.varName + "$internal";
           std::string internalSetVar = "this." + info.varName + "$internal = $newValue";
           if(isOverriden) {
@@ -2309,7 +2342,7 @@ namespace {
         if(getAccessorKindString(accessorDecl->getAccessorKind()) == "set") {
           //subscript set
           isAssignment = true;
-          result.str = "this[" + paramRepr[1] + "] = " + paramRepr[0];
+          result.str = "this[" + paramRepr[1] + "] = _cloneStruct(" + paramRepr[0] + ")";
         }
         else {
           //subscript get
@@ -2904,12 +2937,13 @@ public:
   }
 
   void visitYieldStmt(YieldStmt *S) {
-    printCommon(S, "yield_stmt");
+    /*printCommon(S, "yield_stmt");
     for (auto yield : S->getYields()) {
       OS << '\n';
       printRec(yield);
     }
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*yield*/";
   }
 
   void visitDeferStmt(DeferStmt *S) {
@@ -3156,19 +3190,18 @@ public:
   bool printPatternCondition(std::string varName, const Pattern *P) {
     bool first = true;
     for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
+      nameReplacements[varName] = matchNameReplacement(varName, node.first);
       if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
         if(first) first = false;
         else OS << " && ";
-        nameReplacements[varName] = matchNameReplacement(varName, node.first);
         OS << "(";
         printRec(exprPattern);
         OS << ")";
-        nameReplacements = {};
       }
       else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
         if(first) first = false;
         else OS << " && ";
-        OS << varName << ".rawValue == ";
+        OS << nameReplacements[varName] << ".rawValue == ";
         OS << getTypeName(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
         if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
         OS << ".rawValue";
@@ -3176,9 +3209,10 @@ public:
       else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
         if(first) first = false;
         else OS << " && ";
-        OS << varName << " instanceof ";
+        OS << nameReplacements[varName] << " instanceof ";
         OS << getTypeName(isPattern->getCastTypeLoc().getType());
       }
+      nameReplacements = {};
     }
     return !first;
   }
@@ -3609,7 +3643,9 @@ public:
         std::string str;
         llvm::raw_string_ostream stream(str);
         stream << openFunctions.back()->getInnermostDeclContext();
-        string = "$info" + stream.str() + ".$setThis(_cloneStruct(#ASS))";
+        string = "$info";
+        if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) string += stream.str();
+        string += ".$setThis(_cloneStruct(#ASS))";
       }
       else {
         string = "this";
@@ -4148,9 +4184,11 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitPointerToPointerExpr(PointerToPointerExpr *E) {
-    printCommon(E, "pointer_to_pointer") << '\n';
+    /*printCommon(E, "pointer_to_pointer") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*pointer_to_pointer*/";
+    printRec(E->getSubExpr());
   }
   void visitForeignObjectConversionExpr(ForeignObjectConversionExpr *E) {
     printCommon(E, "foreign_object_conversion") << '\n';
@@ -4331,21 +4369,32 @@ public:
       else break;
     }
     auto lDeclrefExpr = dyn_cast<DeclRefExpr>(lExpr);
+    if(rExpr) rExpr = skipInOutExpr(rExpr);
     
     std::string iString = "{";
     
     bool passSetThis = false;
+    bool passClassAsSelf = false;
     if(isSubscriptAss) {passSetThis = true; rExpr = lExpr;}
     else if(lDeclrefExpr && rExpr) {
       if (auto *FD = dyn_cast<FuncDecl>(lDeclrefExpr->getDecl())) {
         passSetThis = FD->isMutating();
       }
     }
+    if (lDeclrefExpr && rExpr) {
+      if (auto *FD = dyn_cast<FuncDecl>(lDeclrefExpr->getDecl())) {
+        passClassAsSelf = FD->isStatic();
+      }
+    }
     
     if(passSetThis) {
-      rExpr = skipInOutExpr(rExpr);
       std::string setStr = handleLAssignment(rExpr, handleRAssignment(rExpr, "$val"));
       iString += "$setThis: $val => " + setStr;
+    }
+    
+    if(passClassAsSelf) {
+      if(passSetThis) iString += ", ";
+      iString += "Self: " + getTypeName(GetTypeOfExpr(rExpr));
     }
     
     if (lDeclrefExpr && lDeclrefExpr->getDeclRef().isSpecialized()) {
@@ -4353,7 +4402,7 @@ public:
       auto params = substitutions.getGenericSignature()->getGenericParams();
       int i = 0;
       for(Type T: substitutions.getReplacementTypes()) {
-        if(i || passSetThis) iString += ", ";
+        if(i || passSetThis || passClassAsSelf) iString += ", ";
         iString += params[i]->getName().get();
         printGenerics = true;
         iString += ": " + getTypeName(T);
@@ -5439,6 +5488,7 @@ namespace {
         OS << ".";
       }
       OS << getName(T->getDecl());
+      if(printProtocolAsImplementation) OS << "$implementation";
     }
 
     void visitMetatypeType(MetatypeType *T, StringRef label) {
@@ -5535,7 +5585,7 @@ namespace {
           }
         }
         OS << "$info";
-        if(!PRINT_EXTENSION) OS << owningDC;
+        if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) OS << owningDC;
         if(!noGenericAccess) OS << "." << T->getFullName();
       }
     }
