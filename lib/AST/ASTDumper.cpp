@@ -107,7 +107,7 @@ const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "l
 
 const std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY = {
   {"Swift.(file).Array", "toString(){return '[' + this.join(', ') + ']'}"},
-  {"Swift.(file).Collection", "_failEarlyRangeCheckBounds(){}"}
+  {"Swift.(file).Collection", "_failEarlyRangeCheckBounds(){}\n_expectEnd(){}"}
 };
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
@@ -1921,16 +1921,14 @@ namespace {
             }
           }
           
-          if(!VD->getDeclContext()->getSelfProtocolDecl()) {
-            for (auto accessor : VD->getAllAccessors()) {
-              //swift autogenerates getter/setters for regular vars; no need to display them
-              if(accessor->isImplicit()) continue;
-              
-              std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
-              std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams(), nullptr, false) + printFuncBody(accessor);
-              
-              info.accessorBodies[accessorType] = bodyStr;
-            }
+          for (auto accessor : VD->getAllAccessors()) {
+            //swift autogenerates getter/setters for regular vars; no need to display them
+            if(accessor->isImplicit()) continue;
+            
+            std::string accessorType = getAccessorKindString(accessor->getAccessorKind());
+            std::string bodyStr = printFuncSignature(accessor->getParameters(), accessor->getGenericParams(), nullptr, false) + printFuncBody(accessor);
+            
+            info.accessorBodies[accessorType] = bodyStr;
           }
           
           info.varNames.push_back(varName);
@@ -4022,12 +4020,24 @@ public:
         }
       }
       else if(E->getElementMapping()[resultArgI] == -2) {
-        OS << (resultArgI ? ", " : "") << "[";
+        if(resultArgI) OS << ", ";
+        
+        OS << "_create(Array, 'initBuffer', {Element: ";
+        
+        if(auto *FD = dyn_cast<AbstractFunctionDecl>(E->getDefaultArgsOwner().getDecl())) {
+          OS << getTypeName(FD->getParameters()->get(resultArgI)->getType());
+        }
+        else {
+          llvm_unreachable("abstract function decl expected as getDefaultArgsOwner");
+        }
+        
+        OS << "}, [";
+        
         for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size() && srcArgI < arguments.size(); varArgI++) {
           if(varArgI) OS << ", ";
           OS << dumpToStr(arguments[srcArgI++]);
         }
-        OS << "]";
+        OS << "])";
       }
       else {
         OS << (resultArgI ? ", " : "") << "'?3'";
