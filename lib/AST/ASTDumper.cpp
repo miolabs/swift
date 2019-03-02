@@ -5600,19 +5600,22 @@ namespace {
 //        if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) OS << owningDC;
 //        if(!noGenericAccess) OS << "." << T->getFullName();
 //      }
-      if (auto owningDC = T->getGenericEnvironment()->getOwningDeclContext()) {
-        if (auto extensionDC = dyn_cast<ExtensionDecl>(owningDC)) {
-          owningDC = extensionDC->getExtendedNominal();
-        }
-        if (auto NDC = dyn_cast<NominalTypeDecl>(owningDC)) {
-          for(auto *member : getAllMembers(NDC, false).members) {
-            if(auto *varMember = dyn_cast<VarDecl>(member)) {
-              //can't just compare types because failing for extensions
-              if(auto *memberT = dyn_cast<PrimaryArchetypeType>(varMember->getType().getPointer())) {
-                if(T->getFullName() == memberT->getFullName()) {
-                  OS << "this." << getName(varMember);
-                  if(!noGenericAccess) OS << ".constructor";
-                  return;
+      bool isStatic = openFunctions.size() && openFunctions.back()->isStatic();
+      if(!isStatic) {
+        if (auto owningDC = T->getGenericEnvironment()->getOwningDeclContext()) {
+          if (auto extensionDC = dyn_cast<ExtensionDecl>(owningDC)) {
+            owningDC = extensionDC->getExtendedNominal();
+          }
+          if (auto NDC = dyn_cast<NominalTypeDecl>(owningDC)) {
+            for(auto *member : getAllMembers(NDC, false).members) {
+              if(auto *varMember = dyn_cast<VarDecl>(member)) {
+                //can't just compare types because failing for extensions
+                if(auto *memberT = dyn_cast<PrimaryArchetypeType>(varMember->getType().getPointer())) {
+                  if(T->getFullName() == memberT->getFullName()) {
+                    OS << "this." << getName(varMember);
+                    if(!noGenericAccess) OS << ".constructor";
+                    return;
+                  }
                 }
               }
             }
