@@ -458,7 +458,7 @@ std::string getLibBody(ValueDecl *D, bool isAssignment = false) {
     if(isAssignment) memberIdentifier += "#ASS";
     if(LIB_BODIES.count(memberIdentifier)) return LIB_BODIES.at(memberIdentifier);
   }
-  return "";
+  return "#NO-BODY";
 }
 
 std::string getTypeName(Type T) {
@@ -2016,7 +2016,7 @@ namespace {
           OS << "\n" << info.varPrefix << info.varName << "$get";
           if(LIB_GENERATE_MODE) {
             std::string defaultBody = "throw 'unsupported variable " + getMemberIdentifier(info.varDecl) + " in ' + this.constructor.name";
-            if(getLibBody(info.varDecl).length()) defaultBody = getLibBody(info.varDecl);
+            if(getLibBody(info.varDecl) != "#NO-BODY") defaultBody = getLibBody(info.varDecl);
             OS << "() {\n" + defaultBody + "\n}";
           }
           else if(info.accessorBodies.count("get")) {
@@ -2381,7 +2381,7 @@ namespace {
         result.str = "throw 'unsupported method " + getMemberIdentifier(NameD) + " in ' + this.constructor.name";
       }
       std::string libBody = getLibBody(NameD, isAssignment);
-      if(libBody.length()) {
+      if(libBody != "#NO-BODY") {
         result.str = libBody;
       }
       
