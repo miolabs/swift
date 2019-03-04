@@ -1872,7 +1872,11 @@ namespace {
         }
       }
       else if(auto *wrapped = dyn_cast<OptionalSomePattern>(P)) {
-        walkPattern(wrapped->getSubPattern(), info, access);
+        info.push_back(std::make_pair(access, P));
+        //fairly bodgy; that's to unwrap the element on declaration with [0]
+        std::vector<unsigned> elAccess(access);
+        elAccess.push_back(0);
+        walkPattern(wrapped->getSubPattern(), info, elAccess);
       }
       else {
         info.push_back(std::make_pair(access, P));
@@ -2974,7 +2978,7 @@ public:
 
   struct IfLet { std::string init1; std::string condition; std::string init2; };
   
-  IfLet getIfLet(Pattern *P, Expr *initExpr, int ifLetI) {
+  IfLet getIfLet(Pattern *P, Expr *initExpr, int ifLetI, bool unwrap) {
     
     //don't do $tuple here
     std::string init1 = "const $ifLet" + std::to_string(ifLetI) + " = " + dumpToStr(initExpr);
@@ -2992,7 +2996,8 @@ public:
         
         init2 += init2.length() ? ", " : "let ";
         init2 += getName(VD);
-        init2 += " = $ifLet" + std::to_string(ifLetI) + "[0]";
+        init2 += " = $ifLet" + std::to_string(ifLetI);
+        if(unwrap) init2 += "[0]";
         
         if(node.first.size()) {
           for(auto index : node.first) {
@@ -3017,7 +3022,7 @@ public:
       }
       else if (auto pattern = elt.getPatternOrNull()) {
         if(condition.length()) condition += " && ";
-        auto ifLet = getIfLet(pattern, elt.getInitializer(), ifLetI++);
+        auto ifLet = getIfLet(pattern, elt.getInitializer(), ifLetI++, false);
         init1 += ifLet.init1 + '\n';
         condition += ifLet.condition;
         init2 += ifLet.init2 + '\n';
@@ -3148,7 +3153,8 @@ public:
     
     OS << "\nwhile(true) {\n";
     
-    auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext(), 0);
+    //for_each doesn't seem to include pattern_optional_some, hence pass true to unwrap with `[0]`
+    auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext(), 0, true);
     
     OS << ifLet.init1;
     OS << ";\nif(!(" + ifLet.condition + ")) break\n";
@@ -3222,6 +3228,11 @@ public:
         OS << getTypeName(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
         if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
         OS << ".rawValue";
+      }
+      else if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(node.second)) {
+        if(first) first = false;
+        else OS << " && ";
+        OS << nameReplacements[varName] << ".rawValue == 'some'";
       }
       else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
         if(first) first = false;
@@ -5740,7 +5751,7 @@ namespace {
         }
       }
 
-      OS << "'!unclarifiedGeneric:" << T->getFullName() << "'";
+      OS << "((function(){throw '!unclarifiedGeneric:" << T->getFullName() << "'})())";
     }
     void visitNestedArchetypeType(NestedArchetypeType *T, StringRef label) {
       /*printArchetypeCommon(T, "nested_archetype_type", label);
@@ -5780,7 +5791,7 @@ namespace {
         }
       }
       
-      OS << "'!unclarifiedGeneric:" << T->getFullName() << "'";
+      OS << "((function(){throw '!unclarifiedGeneric:" << T->getFullName() << "'})())";
     }
     void visitOpenedArchetypeType(OpenedArchetypeType *T, StringRef label) {
       /*printArchetypeCommon(T, "opened_archetype_type", label);
