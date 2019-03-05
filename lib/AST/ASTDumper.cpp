@@ -1422,8 +1422,20 @@ namespace {
       orderFile.close();
     }
     
+    void printRangesNominalType(NominalTypeDecl *ND) {
+      if(ND->getFormalAccess() < AccessLevel::Public) return;
+      if(!getName(ND).length() || getName(ND)[0] == '_') return;
+      for (Decl *subD : ND->getMembers()) {
+        if (auto *VD = dyn_cast<NominalTypeDecl>(subD)) {
+          printRangesNominalType(VD);
+        }
+        else if (auto *VD = dyn_cast<ValueDecl>(subD)) {
+          printRange(VD, true);
+        }
+      }
+    }
+    
     void printRange(ValueDecl *VD, bool isTypeContext = false, ExtensionDecl *ED = nullptr) {
-      if(VD->getFormalAccess() < AccessLevel::Public) return;
       if(!getName(VD).length() || getName(VD)[0] == '_') return;
       auto R = VD->getSourceRange();
       if (R.isValid()) {
@@ -1529,17 +1541,14 @@ namespace {
       else if(PRINT_RANGES) {
         for (Decl *D : SF.Decls) {
           if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
-            if(ND->getFormalAccess() < AccessLevel::Public) continue;
-            if(!getName(ND).length() || getName(ND)[0] == '_') continue;
-            for (Decl *subD : ND->getMembers()) {
-              if (auto *VD = dyn_cast<ValueDecl>(subD)) {
-                printRange(VD, true);
-              }
-            }
+            printRangesNominalType(ND);
           }
           else if(auto *ED = dyn_cast<ExtensionDecl>(D)) {
             for (Decl *subD : ED->getMembers()) {
-              if (auto *VD = dyn_cast<ValueDecl>(subD)) {
+              if (auto *VD = dyn_cast<NominalTypeDecl>(subD)) {
+                printRangesNominalType(VD);
+              }
+              else if (auto *VD = dyn_cast<ValueDecl>(subD)) {
                 printRange(VD, true, ED);
               }
             }
@@ -2345,21 +2354,18 @@ namespace {
 
       if(auto *accessorDecl = dyn_cast<AccessorDecl>(FD)) {
         if(getAccessorKindString(accessorDecl->getAccessorKind()) == "set") {
-          //subscript set
           isAssignment = true;
-          result.str = "this[" + paramRepr[1] + "] = _cloneStruct(" + paramRepr[0] + ")";
-        }
-        else {
-          //subscript get
-          result.str = "return this[" + paramRepr[0] + "]";
         }
       }
-      else if(auto *constructorDecl = dyn_cast<ConstructorDecl>(FD)) {
+      
+      bool isMixin = false;
+      auto *constructorDecl = dyn_cast<ConstructorDecl>(FD);
+      if(auto *ND = FD->getDeclContext()->getSelfNominalTypeDecl()) {
+        isMixin = LIB_MIXINS.count(getMemberIdentifier(ND));
+      }
+      if(constructorDecl && isMixin && params && params->size() == 1) {
         //constructor
-        result.str = "";
-        if(params && params->size() == 1) {
-          result.str = "return " + paramRepr[0];
-        }
+        result.str = "return " + paramRepr[0];
       }
       else if(FD->isOperator()) {
         //operator
@@ -2730,8 +2736,10 @@ void swift::printContext(raw_ostream &os, DeclContext *dc) {
     break;
 
   case DeclContextKind::ExtensionDecl:
-    if (auto extendedNominal = cast<ExtensionDecl>(dc)->getExtendedNominal()) {
-      printName(os, extendedNominal->getName());
+    if (auto extendedType = cast<ExtensionDecl>(dc)->getExtendedType()) {
+      //that's supposed to include the type's parents if it's a nested type which was being lost previously
+      os << std::regex_replace(getTypeName(extendedType), std::regex("MIO_Mixin_"), "");
+      //printName(os, extendedNominal->getName());
     }
     //os << " extension";
     break;
@@ -3804,12 +3812,14 @@ public:
     OS << std::regex_replace(rString, std::regex("#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
   }
   void visitDynamicMemberRefExpr(DynamicMemberRefExpr *E) {
-    printCommon(E, "dynamic_member_ref_expr");
+    /*printCommon(E, "dynamic_member_ref_expr");
     PrintWithColorRAII(OS, DeclColor) << " decl=";
     E->getMember().dump(OS);
     OS << '\n';
     printRec(E->getBase());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*dynamic_member_ref_expr*/";
+    printRec(E->getBase());
   }
   void visitUnresolvedMemberExpr(UnresolvedMemberExpr *E) {
     printCommon(E, "unresolved_member_expr")
@@ -4214,14 +4224,18 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitDerivedToBaseExpr(DerivedToBaseExpr *E) {
-    /*printCommon(E, "derived_to_base_expr") << '\n';*/
+    /*printCommon(E, "derived_to_base_expr") << '\n';
     printRec(E->getSubExpr());
-    /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*derived_to_base_expr*/";
+    printRec(E->getSubExpr());
   }
   void visitArchetypeToSuperExpr(ArchetypeToSuperExpr *E) {
-    printCommon(E, "archetype_to_super_expr") << '\n';
+    /*printCommon(E, "archetype_to_super_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*archetype_to_super_expr*/";
+    printRec(E->getSubExpr());
   }
   void visitInjectIntoOptionalExpr(InjectIntoOptionalExpr *E) {
     /*printCommon(E, "inject_into_optional") << '\n';*/
@@ -4231,36 +4245,48 @@ public:
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitClassMetatypeToObjectExpr(ClassMetatypeToObjectExpr *E) {
-    printCommon(E, "class_metatype_to_object") << '\n';
+    /*printCommon(E, "class_metatype_to_object") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*class_metatype_to_object*/";
+    printRec(E->getSubExpr());
   }
   void visitExistentialMetatypeToObjectExpr(ExistentialMetatypeToObjectExpr *E) {
-    printCommon(E, "existential_metatype_to_object") << '\n';
+    /*printCommon(E, "existential_metatype_to_object") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*existential_metatype_to_object*/";
+    printRec(E->getSubExpr());
   }
   void visitProtocolMetatypeToObjectExpr(ProtocolMetatypeToObjectExpr *E) {
-    printCommon(E, "protocol_metatype_to_object") << '\n';
+    /*printCommon(E, "protocol_metatype_to_object") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*protocol_metatype_to_object*/";
+    printRec(E->getSubExpr());
   }
   void visitInOutToPointerExpr(InOutToPointerExpr *E) {
-    printCommon(E, "inout_to_pointer")
+    /*printCommon(E, "inout_to_pointer")
       << (E->isNonAccessing() ? " nonaccessing" : "") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/**/";
+    printRec(E->getSubExpr());
   }
   void visitArrayToPointerExpr(ArrayToPointerExpr *E) {
-    printCommon(E, "array_to_pointer")
+    /*printCommon(E, "array_to_pointer")
       << (E->isNonAccessing() ? " nonaccessing" : "") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*array_to_pointer*/";
+    printRec(E->getSubExpr());
   }
   void visitStringToPointerExpr(StringToPointerExpr *E) {
-    printCommon(E, "string_to_pointer") << '\n';
+    /*printCommon(E, "string_to_pointer") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*string_to_pointer*/";
+    printRec(E->getSubExpr());
   }
   void visitPointerToPointerExpr(PointerToPointerExpr *E) {
     /*printCommon(E, "pointer_to_pointer") << '\n';
@@ -4270,14 +4296,18 @@ public:
     printRec(E->getSubExpr());
   }
   void visitForeignObjectConversionExpr(ForeignObjectConversionExpr *E) {
-    printCommon(E, "foreign_object_conversion") << '\n';
+    /*printCommon(E, "foreign_object_conversion") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*foreign_object_conversion*/";
+    printRec(E->getSubExpr());
   }
   void visitUnevaluatedInstanceExpr(UnevaluatedInstanceExpr *E) {
-    printCommon(E, "unevaluated_instance") << '\n';
+    /*printCommon(E, "unevaluated_instance") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*unevaluated_instance*/";
+    printRec(E->getSubExpr());
   }
 
   void visitInOutExpr(InOutExpr *E) {
@@ -4293,9 +4323,11 @@ public:
   }
 
   void visitVarargExpansionExpr(VarargExpansionExpr *E) {
-    printCommon(E, "vararg_expansion_expr") << '\n';
+    /*printCommon(E, "vararg_expansion_expr") << '\n';
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*vararg_expansion_expr*/";
+    printRec(E->getSubExpr());
   }
 
   void visitForceTryExpr(ForceTryExpr *E) {
