@@ -107,7 +107,11 @@ const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
   {"Swift.(file).Dictionary", "($info, obj){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
 };
 
-const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach"};
+const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach", "startsWith", "endsWith"};
+
+std::unordered_map<std::string, bool> PASS_INFO = {
+  {"Swift.(file).numericCast(_:T)", true}
+};
 
 std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY;
 
@@ -124,7 +128,6 @@ bool printGenerics = false;
 bool hideGenerics = false;
 
 std::vector<std::string> structInitializers;
-std::vector<std::string> structTypeAliases;
 std::string libGenerateTypeAliases;
 
 std::unordered_map<std::string, std::string> functionUniqueNames;
@@ -134,6 +137,7 @@ std::unordered_map<std::string, int> functionOverloadedCounts = {
 
 std::unordered_map<std::string, std::string> nameReplacements;
 std::unordered_map<ValueDecl*, std::string> nameReplacementsByDecl;
+int ifLetVarI = 0;
 
 std::unordered_map<TypeExpr*, Expr*> archetypeTypeClarifications;
 
@@ -287,19 +291,6 @@ std::string cloneStruct(Expr *rExpr, std::string baseStr) {
   return baseStr;
 }
 
-bool isXCTestCaseDescendant(NominalTypeDecl *ND) {
-  while(true) {
-    if(!ND->getInherited().size()) return false;
-    Type Super = ND->getInherited()[0].getType();
-    if(Super->isExistentialType()) return false;
-    if(auto supND = Super->getNominalOrBoundGenericNominal()) {
-      ND = supND;
-      if(getMemberIdentifier(ND) == "XCTest.(file).XCTestCase") return true;
-    }
-    else return false;
-  }
-}
-
 bool isNative(std::string uniqueIdentifier) {
   return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0 || uniqueIdentifier.find("ObjectiveC.(file).") == 0 || uniqueIdentifier.find("Darwin.(file).") == 0 || uniqueIdentifier.find("Foundation.(file).") == 0 || PRINT_EXTENSION;
 }
@@ -312,12 +303,6 @@ std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
         stringifiedOp += "_" + std::to_string(int(userFacingName[i]));
       }
       userFacingName = stringifiedOp;
-    }
-    
-    if(auto *ND = D->getDeclContext()->getSelfNominalTypeDecl()) {
-      if(isXCTestCaseDescendant(ND) && D->getFormalAccess() <= AccessLevel::FilePrivate) {
-        userFacingName += "$filePrivate";
-      }
     }
     
     functionUniqueNames[uniqueIdentifier] = userFacingName;
@@ -495,6 +480,34 @@ AllMembers getAllMembers(NominalTypeDecl *D, bool recursive) {
   getAllMembers2(D, result, recursive);
   return result;
 }
+
+/*struct ConformingToProtocol { std::list<NominalTypeDecl*> classes; };
+void getAllClassesConformingToProtocol2(SmallVector<Decl *, 64> &displayDecls, ProtocolDecl *PD, ConformingToProtocol &result) {
+  for(Decl *D : displayDecls) {
+    if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
+      for(auto Super : ND->getInherited()) {
+        if(auto *SuperND = Super.getType()->getNominalOrBoundGenericNominal()) {
+          if(SuperND == PD) {
+            if(auto *NPD = dyn_cast<ProtocolDecl>(ND)) {
+              getAllClassesConformingToProtocol2(displayDecls, NPD, result);
+            }
+            else {
+              result.classes.push_back(ND);
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+ConformingToProtocol getAllClassesConformingToProtocol(ModuleDecl *MD, ProtocolDecl *PD) {
+  ConformingToProtocol result;
+  SmallVector<Decl *, 64> displayDecls;
+  MD->getDisplayDecls(displayDecls);
+  getAllClassesConformingToProtocol2(displayDecls, PD, result);
+  return result;
+}*/
 
 std::string printGenericParams(GenericParamList *genericParams) {
   if(!genericParams) return "";
@@ -1104,6 +1117,33 @@ namespace {
           OS << '\n';
           printRec(Member);
         }
+        return;
+      }
+      
+      if(LIB_GENERATE_MODE) return;
+      
+      auto *ND = ED->getSelfNominalTypeDecl();
+      if(ND && isNative(getMemberIdentifier(ND))) {
+        OS << "\nclass $NativeExtension {";
+        for(Decl *subD : ED->getMembers()) {
+          OS << '\n';
+          printRec(subD);
+        }
+        OS << "\n}\n";
+        if(auto *PD = dyn_cast<ProtocolDecl>(ND)) {
+          //we need to catch all types that inherit from the protocol and extend them :/
+          /*for(auto *Class : getAllClassesConformingToProtocol(ED->getASTContext().getStdlibModule(), PD).classes) {
+            OS << "_mixin(" << getTypeName(Class->getDeclaredType()) << ", $NativeExtension, true);\n";
+          }*/
+          OS << "/*TODO mix into protocol*/";
+        }
+        else {
+          std::string extendedName = getTypeName(ED->getExtendedType());
+          if(LIB_MIXINS.count(getMemberIdentifier(ED->getExtendedNominal()))) {
+            extendedName = LIB_MIXINS.at(getMemberIdentifier(ED->getExtendedNominal()));
+          }
+          OS << "_mixin(" << extendedName << ", $NativeExtension, true);\n";
+        }
       }
     }
 
@@ -1131,27 +1171,26 @@ namespace {
       
       printProtocolAsImplementation = true;
 
-      if(LIB_GENERATE_MODE && TAD->getDeclContext()->isTypeContext()) {
+      if(TAD->getDeclContext()->isTypeContext()) {
         if(TAD->getUnderlyingTypeLoc().getType()) {
+          TypeBase *parentType = nullptr;
           if(auto *VD = dyn_cast<NominalTypeDecl>(TAD->getDeclContext()->getAsDecl())) {
-            libGenerateTypeAliases += '\n' + getTypeName(VD->getDeclaredType()) + '.' + getName(TAD) + " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+            parentType = VD->getDeclaredType().getPointer();
           }
           else if(auto *ED = dyn_cast<ExtensionDecl>(TAD->getDeclContext()->getAsDecl())) {
-            libGenerateTypeAliases += '\n' + getTypeName(ED->getExtendedType()) + '.' + getName(TAD) + " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+            parentType = ED->getExtendedType().getPointer();
+          }
+          if(parentType) {
+            std::string typeAlias = '\n' + getTypeName(parentType) + '.' + getName(TAD) + " = " + getTypeName(TAD->getUnderlyingTypeLoc().getType());
+            if(LIB_GENERATE_MODE) libGenerateTypeAliases += typeAlias;
+            else afterStruct += typeAlias;
           }
         }
         printProtocolAsImplementation = false;
         return;
       }
       
-      std::string str;
-      if(TAD->getDeclContext()->isTypeContext()) {
-        str += "static readonly ";
-      }
-      else {
-        str += "const ";
-      }
-      str += getName(TAD);
+      std::string str = "const " + getName(TAD);
       if (TAD->getUnderlyingTypeLoc().getType()) {
         if(LIB_GENERATE_MODE) {
           str += " = " + std::regex_replace(getTypeName(TAD->getUnderlyingTypeLoc().getType()), std::regex("MIO_Mixin_"), "");
@@ -1161,12 +1200,7 @@ namespace {
         }
       }
       
-      if(TAD->getDeclContext()->isTypeContext()) {
-        structTypeAliases.back() += "\n" + str;
-      }
-      else {
-        OS << str;
-      }
+      OS << str;
       printProtocolAsImplementation = false;
     }
 
@@ -1672,7 +1706,6 @@ namespace {
       Decl* lastNonExtensionMember = all.lastNonExtensionMember;
       
       structInitializers.push_back("");
-      structTypeAliases.push_back("");
       
       std::string name = getName(D);
       std::string nestedName = getTypeName(D->getDeclaredType());
@@ -1753,16 +1786,6 @@ namespace {
         if(shouldPrintBefore) printRec(subD);
       }
       
-      if(structTypeAliases.back().length()) {
-        if(kind == "protocol" && !protocolImplementation) {
-          OS << "\n}\n";
-          printAnyStructSignature("class", name + "$implementation", D);
-          OS << "{";
-          protocolImplementation = true;
-        }
-        OS << structTypeAliases.back();
-      }
-      
       if(!LIB_GENERATE_MODE && kind == "enum") {
         OS << "\nstatic infix_61_61($info, a, b){return (a && a.rawValue) == (b && b.rawValue)}";
         OS << "\nstatic infix_33_61($info, a, b){return (a && a.rawValue) != (b && b.rawValue)}";
@@ -1806,7 +1829,6 @@ namespace {
       }
       
       structInitializers.pop_back();
-      structTypeAliases.pop_back();
     }
 
     void visitStructDecl(StructDecl *SD) {
@@ -2269,10 +2291,10 @@ namespace {
     
     std::string printFuncBody(AbstractFunctionDecl *FD) {
       
-      std::string body = "";
-      
+      std::string body = "{\n";
+      if(FD->getDeclContext()->isTypeContext()) body += "let _this = this;\n";
+
       if (FD -> isMemberwiseInitializer()) {
-        body += "{";
         for (auto P : *FD->getParameters()) {
           body += '\n';
           
@@ -2290,7 +2312,6 @@ namespace {
           
           body += handleLAssignment(storedRef, getName(P));
         }
-        body += "\n}";
       }
       else if (auto Body = FD->getBody(/*canSynthesize=*/false)) {
         std::string bodyStr;
@@ -2298,12 +2319,12 @@ namespace {
         openFunctions.push_back(FD);
         printRec(Body, FD->getASTContext(), bodyStream);
         openFunctions.pop_back();
-        body += "{\n";
         body += generateInOutPrefix(FD);
         body += bodyStream.str();
         body += generateInOutSuffix(FD);
-        body += "\n}";
       }
+      else return "";
+      body += "\n}";
       
       return body;
     }
@@ -2370,20 +2391,21 @@ namespace {
       else if(FD->isOperator()) {
         //operator
         std::string operatorFix = getOperatorFix(FD);
+        bool isOverflow = userFacingName[0] == '&' && userFacingName != "&" && userFacingName != "&&" && userFacingName != "&=";
+        std::string shownOperator = isOverflow ? userFacingName.substr(1) : userFacingName;
         if(std::find(std::begin(ASSIGNMENT_OPERATORS), std::end(ASSIGNMENT_OPERATORS), userFacingName) != std::end(ASSIGNMENT_OPERATORS)) {
-          result.str = paramRepr[0] + ".set(" + paramRepr[0] + ".get() " + userFacingName.substr(0, userFacingName.length() - 1) + " " + paramRepr[1] + ")";
+          result.str = paramRepr[0] + ".set(" + paramRepr[0] + ".get() " + shownOperator.substr(0, shownOperator.length() - 1) + " " + paramRepr[1] + ")";
         }
         else if(operatorFix == "prefix") {
-          result.str = "return " + userFacingName + paramRepr[0];
+          result.str = "return " + shownOperator + paramRepr[0];
         }
         else if(operatorFix == "postfix") {
-          result.str = "return " + paramRepr[0] + userFacingName;
+          result.str = "return " + paramRepr[0] + shownOperator;
         }
         else {
-          result.str = "return " + paramRepr[0] + " " + userFacingName + " " + paramRepr[1];
+          result.str = "return " + paramRepr[0] + " " + shownOperator + " " + paramRepr[1];
         }
-        //js doesn't understand operators starting with &/.
-        if((userFacingName[0] == '&' && userFacingName != "&&") || userFacingName == "~=" || userFacingName[0] == '.') {
+        if(userFacingName == "~=" || userFacingName[0] == '.') {
           result.str = "/*" + result.str + "*/";
         }
       }
@@ -2392,6 +2414,9 @@ namespace {
         result.str = "throw 'unsupported method " + getMemberIdentifier(NameD) + " in ' + this.constructor.name";
       }
       std::string libBody = getLibBody(NameD, isAssignment);
+      if(constructorDecl && isMixin && libBody.length() >= 6 && libBody.substr(libBody.length() - 6) == "return") {
+        libBody = "#NO-BODY";
+      }
       if(libBody != "#NO-BODY") {
         result.str = libBody;
       }
@@ -2921,7 +2946,9 @@ public:
       OS << "}catch($error){";
       OS << dumpToStr(pair->second);
       OS << ";throw $error}";
+      OS << "})();";
       OS << dumpToStr(pair->second);
+      OS << ";return $result;";
       pair = braceStmtsWithDefer.erase(pair);
     }
     
@@ -2980,48 +3007,49 @@ public:
     OS << "let $defer = () => {";
     printRec(S->getTempDecl()->getBody());
     OS << "\n}";
+    OS << "\nconst $result = (() => {";
     OS << "\ntry {";
     braceStmtsWithDefer.push_back(std::make_pair(openedBraceStmts.back(), S->getCallExpr()));
   }
 
-  struct IfLet { std::string init1; std::string condition; std::string init2; };
+  struct IfLet { std::string init; std::string condition; };
   
-  IfLet getIfLet(Pattern *P, Expr *initExpr, int ifLetI, bool unwrap) {
+  IfLet getIfLet(Pattern *P, Expr *initExpr, bool unwrap) {
     
-    //don't do $tuple here
-    std::string init1 = "const $ifLet" + std::to_string(ifLetI) + " = " + dumpToStr(initExpr);
+    std::string ifLetVar = "$ifLet" + std::to_string(ifLetVarI++);
     
-    std::string condition = "$ifLet" + std::to_string(ifLetI) + ".rawValue === 'some'";
+    std::string init = "const " + ifLetVar;
     
-    //here do $tuple; `properName` = $ifLet[0](...tuple)
-    std::string init2;
+    std::string condition = "((" + ifLetVar + " = " + dumpToStr(initExpr) + ")||true) && " + ifLetVar + ".rawValue === 'some'";
     
     auto flattened = PrintDecl(OS).flattenPattern(P);
     for(auto const& node : flattened) {
       if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
         auto *VD = namedPattern->getDecl();
-        std::string varName = getName(VD);
+        std::string varName = getName(VD) + "$ifLet" + std::to_string(ifLetVarI++);
+        nameReplacementsByDecl[VD] = varName;
         
-        init2 += init2.length() ? ", " : "let ";
-        init2 += getName(VD);
-        init2 += " = $ifLet" + std::to_string(ifLetI);
-        if(unwrap) init2 += "[0]";
+        init += ", " + varName;
         
+        condition += " && ((";
+        condition += varName;
+        condition += " = " + ifLetVar;
+        if(unwrap) condition += "[0]";
         if(node.first.size()) {
           for(auto index : node.first) {
-            init2 += "[" + std::to_string(index) + "]";
+            condition += "[" + std::to_string(index) + "]";
           }
         }
+        condition += ")||true)";
       }
     }
     
-    return IfLet{ init1, condition, init2 };
+    return IfLet{ init, condition };
   }
   
   IfLet getConditionAndInitializerStr(StmtCondition conditions) {
     
-    std::string init1, condition, init2;
-    int ifLetI = 0;
+    std::string init, condition;
     
     for (auto elt : conditions) {
       if (auto booleanOrNull = elt.getBooleanOrNull()) {
@@ -3030,14 +3058,13 @@ public:
       }
       else if (auto pattern = elt.getPatternOrNull()) {
         if(condition.length()) condition += " && ";
-        auto ifLet = getIfLet(pattern, elt.getInitializer(), ifLetI++, false);
-        init1 += ifLet.init1 + '\n';
+        auto ifLet = getIfLet(pattern, elt.getInitializer(), false);
+        init += ifLet.init + '\n';
         condition += ifLet.condition;
-        init2 += ifLet.init2 + '\n';
       }
     }
     
-    return IfLet{ init1, condition, init2 };
+    return IfLet{ init, condition };
   }
   
   void visitIfStmt(IfStmt *S) {
@@ -3054,10 +3081,8 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
-    OS << "\n{";
-    OS << conditionAndInitializerStr.init1;
+    OS << conditionAndInitializerStr.init;
     OS << "\nif(" << conditionAndInitializerStr.condition << ") {\n";
-    OS << conditionAndInitializerStr.init2;
 
     printRec(S->getThenStmt());
     
@@ -3068,7 +3093,6 @@ public:
       printRec(S->getElseStmt());
       OS << "\n}";
     }
-    OS << "\n}";
   }
 
   void visitGuardStmt(GuardStmt *S) {
@@ -3081,12 +3105,9 @@ public:
     
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
-    OS << "\n{";
-    OS << conditionAndInitializerStr.init1;
+    OS << conditionAndInitializerStr.init;
     OS << "\nif(!(" << conditionAndInitializerStr.condition << ")) {\n";
     printRec(S->getBody());
-    OS << "\n}";
-    OS << conditionAndInitializerStr.init2;
     OS << "\n}";
   }
 
@@ -3107,9 +3128,8 @@ public:
     auto conditionAndInitializerStr = getConditionAndInitializerStr(S->getCond());
     
     OS << "while(true){\n";
-    OS << conditionAndInitializerStr.init1;
+    OS << conditionAndInitializerStr.init;
     OS << "\nif(!(" << conditionAndInitializerStr.condition << ")) break\n";
-    OS << conditionAndInitializerStr.init2;
     printRec(S->getBody());
     OS << "\n}";
   }
@@ -3162,11 +3182,10 @@ public:
     OS << "\nwhile(true) {\n";
     
     //for_each doesn't seem to include pattern_optional_some, hence pass true to unwrap with `[0]`
-    auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext(), 0, true);
+    auto ifLet = getIfLet(S->getPattern(), S->getIteratorNext(), true);
     
-    OS << ifLet.init1;
+    OS << ifLet.init;
     OS << ";\nif(!(" + ifLet.condition + ")) break\n";
-    OS << ifLet.init2;
 
     if(S->getWhere()) {
       OS << "\nif(!(" << dumpToStr(S->getWhere()) << ")) break\n";
@@ -3180,6 +3199,12 @@ public:
   void visitBreakStmt(BreakStmt *S) {
     /*printCommon(S, "break_stmt");
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    if(auto *switchStmt = dyn_cast<SwitchStmt>(S->getTarget())) {
+      //break statements in switch are redundant and we already manage the flow
+      return;
+    }
+    
     OS << "break";
   }
   void visitContinueStmt(ContinueStmt *S) {
@@ -3574,7 +3599,7 @@ public:
     PrintWithColorRAII(OS, LiteralValueColor)
       << " value=" << E->getDigitsText();
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    OS << E->getDigitsText();
+    OS << (E->isNegative() ? "-" : "") << E->getDigitsText();
   }
 
   void visitBooleanLiteralExpr(BooleanLiteralExpr *E) {
@@ -3697,10 +3722,10 @@ public:
         stream << openFunctions.back()->getInnermostDeclContext();
         string = "$info";
         if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) string += stream.str();
-        string += ".$setThis(_cloneStruct(#ASS))";
+        string += ".$setThis(_this = _cloneStruct(#ASS))";
       }
       else {
-        string = "this";
+        string = "_this";
       }
     }
     
@@ -3892,12 +3917,7 @@ public:
     printSemanticExpr(E->getSemanticExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    bool isSet = false;
-    if(auto *nominalDecl = GetTypeOfExpr(E)->getNominalOrBoundGenericNominal()) {
-      isSet = getMemberIdentifier(nominalDecl) == "Swift.(file).Set";
-    }
-    
-    OS << "_create(" << (isSet ? "Set, 'initSource'" : "Array, 'initBuffer'") << ", {";//Element: ";
+    OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", 'initArrayLiteralArray', {";//Element: ";
     
     /*TypeBase *maybeBoundGenericType = GetTypeOfExpr(E).getPointer();
     if(auto arraySliceType = dyn_cast<ArraySliceType>(maybeBoundGenericType)) maybeBoundGenericType = arraySliceType->getSinglyDesugaredType();
@@ -4506,21 +4526,21 @@ public:
     /*if(passClassAsSelf) {
       if(passSetThis) iString += ", ";
       iString += "Self: " + getTypeName(GetTypeOfExpr(rExpr));
-    }
+    }*/
     
-    if (lDeclrefExpr && lDeclrefExpr->getDeclRef().isSpecialized()) {
+    if (lDeclrefExpr && lDeclrefExpr->getDeclRef().isSpecialized() && PASS_INFO.count(getMemberIdentifier(lDeclrefExpr->getDecl()))) {
       auto substitutions = lDeclrefExpr->getDeclRef().getSubstitutions();
       auto params = substitutions.getGenericSignature()->getGenericParams();
       int i = 0;
       for(Type T: substitutions.getReplacementTypes()) {
-        if(i || passSetThis || passClassAsSelf) iString += ", ";
+        if(i || passSetThis/* || passClassAsSelf*/) iString += ", ";
         iString += params[i]->getName().get();
         printGenerics = true;
         iString += ": " + getTypeName(T);
         printGenerics = false;
         i++;
       }
-    }*/
+    }
     
     iString += "}";
     
@@ -4678,8 +4698,18 @@ public:
     printRec(E->getRHS());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
+    bool shouldIgnore = false;
+    if(auto *moduleType = dyn_cast<ModuleType>(GetTypeOfExpr(E->getLHS()).getPointer())) {
+      shouldIgnore = true;
+    }
+    
     OS << "/*dot_syntax_base_ignored*/";
-    printRec(E->getRHS());
+    if(shouldIgnore) {
+      printRec(E->getRHS());
+    }
+    else {
+      printApplyExpr(E->getLHS(), E->getRHS(), ".#AA");
+    }
   }
 
   void printExplicitCastExpr(ExplicitCastExpr *E, std::string name) {
@@ -4797,7 +4827,10 @@ public:
     
     if(optionalCondition.back().length()) {
       if(injectIntoOptional) OS << "_injectIntoOptional";
-      OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : null)";
+      OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : ";
+      if(injectIntoOptional) OS << "null";
+      else OS << "Optional.none";
+      OS << ")";
     }
     else {
       OS << expr;
@@ -5771,8 +5804,9 @@ namespace {
 //      }
       
       if(T->getFullName() == "Self") {
-        OS << "this";
-        if(!noGenericAccess) OS << ".constructor";
+        OS << "_this";
+        bool isStatic = openFunctions.size() && openFunctions.back()->isStatic();
+        if(!noGenericAccess && !isStatic) OS << ".constructor";
         return;
       }
       
