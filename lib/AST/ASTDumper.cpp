@@ -3240,7 +3240,7 @@ public:
     OS << ";\nif(!(" + ifLet.condition + ")) break\n";
 
     if(S->getWhere()) {
-      OS << "\nif(!(" << dumpToStr(S->getWhere()) << ")) break\n";
+      OS << "\nif(!(" << dumpToStr(S->getWhere()) << ")) continue\n";
     }
     
     printRec(S->getBody());
