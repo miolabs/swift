@@ -140,6 +140,9 @@ std::unordered_map<ValueDecl*, std::string> nameReplacementsByDecl;
 int ifLetVarI = 0;
 
 std::unordered_map<TypeExpr*, Expr*> archetypeTypeClarifications;
+int archetypeTypeI = 0;
+std::unordered_map<TypeExpr*, int> archetypeTypeIs;
+std::unordered_map<Expr*, std::string> exprStrReplacements;
 
 std::string regex_escape(std::string replacement) {
   return std::regex_replace(replacement, std::regex("\\$"), "$$$$");
@@ -151,7 +154,7 @@ std::vector<BraceStmt*> openedBraceStmts = {};
 std::vector<std::pair<BraceStmt*, Expr*>> braceStmtsWithDefer = {};
 std::unordered_map<BraceStmt*, std::unordered_map<std::string, std::string>> braceStmtsArchetypeClarifications = {};
 
-std::string matchNameReplacement(std::string name, std::vector<unsigned> indexes) {
+std::string patternNameReplacement(std::string name, std::vector<unsigned> indexes) {
   for(auto index : indexes) name += "[" + std::to_string(index) + "]";
   return name;
 }
@@ -177,6 +180,9 @@ std::string getOperatorFix(ValueDecl *D) {
 }
 
 std::string dumpToStr(Expr *E) {
+  if(exprStrReplacements.count(E)) {
+    return exprStrReplacements.at(E);
+  }
   std::string str;
   llvm::raw_string_ostream stream(str);
   E->dump(stream);
@@ -1734,9 +1740,10 @@ namespace {
       }
 
       bool wasClass = false, wasProtocol = false;
-      if(!inherited.empty() && kind != "enum") {
+      if(!inherited.empty()) {
         for(auto Super : inherited) {
           bool isProtocol = Super->isExistentialType();
+          if(kind == "enum" && !isProtocol) continue;
           if ((isProtocol ? wasProtocol : wasClass)) {
             OS << ", ";
           }
@@ -1773,6 +1780,11 @@ namespace {
       
       bool protocolImplementation = false;
       for (Decl *subD : members) {
+        if(auto *funcD = dyn_cast<FuncDecl>(subD)) {
+          if(funcD->isImplicit() && std::string(funcD->getBaseName().userFacingName()) == "__derived_enum_equals") {
+            continue;
+          }
+        }
         OS << '\n';
         bool shouldPrint = !protocolImplementation && kind == "protocol" && (subD == lastNonExtensionMember || !lastNonExtensionMember);
         bool shouldPrintBefore = shouldPrint && !lastNonExtensionMember;
@@ -1784,11 +1796,6 @@ namespace {
           protocolImplementation = true;
         }
         if(shouldPrintBefore) printRec(subD);
-      }
-      
-      if(!LIB_GENERATE_MODE && kind == "enum") {
-        OS << "\nstatic infix_61_61($info, a, b){return (a && a.rawValue) == (b && b.rawValue)}";
-        OS << "\nstatic infix_33_61($info, a, b){return (a && a.rawValue) != (b && b.rawValue)}";
       }
       
       if(kind != "protocol") {
@@ -1813,6 +1820,10 @@ namespace {
           }
           afterStruct += "typeof " + implementedProtocol + "$implementation != 'undefined') _mixin(" + nestedName + (protocolImplementation ? "$implementation" : "") + ", " + implementedProtocol + "$implementation, false)";
         }
+      }
+      
+      if(kind == "enum") {
+        afterStruct += "\n_mixin(" + nestedName + ", _DefaultEnumImplementation, false)";
       }
       
       if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
@@ -1904,7 +1915,7 @@ namespace {
       }
       else if(auto *wrapped = dyn_cast<OptionalSomePattern>(P)) {
         info.push_back(std::make_pair(access, P));
-        //fairly bodgy; that's to unwrap the element on declaration with [0]
+        //optional always has 1 associated value, so always mimick TuplePattern
         std::vector<unsigned> elAccess(access);
         elAccess.push_back(0);
         walkPattern(wrapped->getSubPattern(), info, elAccess);
@@ -3004,7 +3015,17 @@ public:
     printRec(S->getCallExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    OS << "let $defer = () => {";
+    std::string deferName;
+    if(auto *callExpr = dyn_cast<CallExpr>(S->getCallExpr())) {
+      if(auto *callDeclRefExpr = dyn_cast<DeclRefExpr>(callExpr->getFn())) {
+        deferName = getName(callDeclRefExpr->getDecl());
+      }
+    }
+    if(!deferName.length()) {
+      llvm_unreachable("expected getCallExpr to be call_expr with $defer as getFn DeclRefExpr");
+    }
+    
+    OS << "let " << deferName << " = () => {";
     printRec(S->getTempDecl()->getBody());
     OS << "\n}";
     OS << "\nconst $result = (() => {";
@@ -3014,36 +3035,67 @@ public:
 
   struct IfLet { std::string init; std::string condition; };
   
-  IfLet getIfLet(Pattern *P, Expr *initExpr, bool unwrap) {
+  IfLet getIfLet(Pattern *P, Expr *initExpr, bool forIn) {
     
     std::string ifLetVar = "$ifLet" + std::to_string(ifLetVarI++);
     
     std::string init = "const " + ifLetVar;
     
-    std::string condition = "((" + ifLetVar + " = " + dumpToStr(initExpr) + ")||true) && " + ifLetVar + ".rawValue === 'some'";
+    std::string condition = "((" + ifLetVar + " = " + dumpToStr(initExpr) + ")||true)";
     
-    auto flattened = PrintDecl(OS).flattenPattern(P);
-    for(auto const& node : flattened) {
-      if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
-        auto *VD = namedPattern->getDecl();
-        std::string varName = getName(VD) + "$ifLet" + std::to_string(ifLetVarI++);
-        nameReplacementsByDecl[VD] = varName;
-        
-        init += ", " + varName;
-        
-        condition += " && ((";
-        condition += varName;
-        condition += " = " + ifLetVar;
-        if(unwrap) condition += "[0]";
-        if(node.first.size()) {
-          for(auto index : node.first) {
-            condition += "[" + std::to_string(index) + "]";
-          }
-        }
-        condition += ")||true)";
-      }
+    if(forIn) {
+      condition += " && " + ifLetVar + ".rawValue == 'some'";
+      ifLetVar += "[0]";
     }
     
+    auto conditions = printPatternCondition(ifLetVar, P, true);
+    init += conditions.init;
+    if(conditions.condition.length()) condition += " && " + conditions.condition;
+
+    return IfLet{ init, condition };
+  }
+  IfLet printPatternCondition(std::string varName, const Pattern *P, bool initIfLetVars) {
+    std::string init, condition;
+    for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
+      nameReplacements[varName] = patternNameReplacement(varName, node.first);
+      if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
+        if(condition.length()) condition += " && ";
+        
+        if (auto m = exprPattern->getMatchExpr()) condition += "(" + dumpToStr(m) + ")";
+        else condition += "(" + dumpToStr(exprPattern->getSubExpr()) + ")";
+      }
+      else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
+        if(condition.length()) condition += " && ";
+        condition += nameReplacements[varName] + ".rawValue == ";
+        std::string str;
+        llvm::raw_string_ostream stream(str);
+        stream << enumElementPattern->getName();
+        condition += getTypeName(enumElementPattern->getParentType().getType()) + '.' + stream.str();
+        if(enumElementPattern->getElementDecl()->hasAssociatedValues()) condition += "()";
+        condition += ".rawValue";
+      }
+      else if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(node.second)) {
+        if(condition.length()) condition += " && ";
+        condition += nameReplacements[varName] + ".rawValue == 'some'";
+      }
+      else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
+        if(condition.length()) condition += " && ";
+        condition += nameReplacements[varName] + " instanceof ";
+        condition += getTypeName(isPattern->getCastTypeLoc().getType());
+      }
+      else if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
+        if(initIfLetVars) {
+          auto *VD = namedPattern->getDecl();
+          std::string declVarName = getName(VD) + "$ifLet" + std::to_string(ifLetVarI++);
+          nameReplacementsByDecl[VD] = declVarName;
+          
+          init += ", " + declVarName;
+          if(condition.length()) condition += " && ";
+          condition += "((" + declVarName + " = " + nameReplacements[varName] + ")||true)";
+        }
+      }
+      nameReplacements = {};
+    }
     return IfLet{ init, condition };
   }
   
@@ -3222,13 +3274,15 @@ public:
     bool first = true;
     OS << "(";
     if (P) {
-      if(printPatternCondition(varName, P)) first = false;
+      std::string condition = printPatternCondition(varName, P, false).condition;
+      OS << condition;
+      if(condition.length()) first = false;
     }
     if (Guard) {
       if (P) {
         for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
           if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
-            nameReplacements[getName(namedPattern->getSingleVar())] = matchNameReplacement(varName, node.first);
+            nameReplacements[getName(namedPattern->getSingleVar())] = patternNameReplacement(varName, node.first);
           }
         }
       }
@@ -3243,45 +3297,12 @@ public:
     OS << ")";
     return !first;
   }
-  bool printPatternCondition(std::string varName, const Pattern *P) {
-    bool first = true;
-    for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
-      nameReplacements[varName] = matchNameReplacement(varName, node.first);
-      if(auto *exprPattern = dyn_cast<ExprPattern>(node.second)) {
-        if(first) first = false;
-        else OS << " && ";
-        OS << "(";
-        printRec(exprPattern);
-        OS << ")";
-      }
-      else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
-        if(first) first = false;
-        else OS << " && ";
-        OS << nameReplacements[varName] << ".rawValue == ";
-        OS << getTypeName(enumElementPattern->getParentType().getType()) << '.' << enumElementPattern->getName();
-        if(enumElementPattern->getElementDecl()->hasAssociatedValues()) OS << "()";
-        OS << ".rawValue";
-      }
-      else if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(node.second)) {
-        if(first) first = false;
-        else OS << " && ";
-        OS << nameReplacements[varName] << ".rawValue == 'some'";
-      }
-      else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
-        if(first) first = false;
-        else OS << " && ";
-        OS << nameReplacements[varName] << " instanceof ";
-        OS << getTypeName(isPattern->getCastTypeLoc().getType());
-      }
-      nameReplacements = {};
-    }
-    return !first;
-  }
+  
   void printPatternDeclarations(std::string varName, const Pattern *P) {
     for(auto const& node : PrintDecl(OS).flattenPattern(P)) {
       if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
         auto declaredName = getName(namedPattern->getSingleVar());
-        auto init = matchNameReplacement(varName, node.first);
+        auto init = patternNameReplacement(varName, node.first);
         if(declaredName == init) continue;
         OS << "\nconst " << declaredName << " = " << init;
       }
@@ -3748,8 +3769,10 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     if(archetypeTypeClarifications.count(E)) {
-      OS << "(" + dumpToStr(archetypeTypeClarifications[E]) << ").constructor";
+      OS << "(_.arg" + std::to_string(archetypeTypeIs[E]) + " = " + dumpToStr(archetypeTypeClarifications[E]) << ").constructor";
+      exprStrReplacements[archetypeTypeClarifications[E]] = "_.arg" + std::to_string(archetypeTypeIs[E]);
       archetypeTypeClarifications.erase(E);
+      archetypeTypeIs.erase(E);
       return;
     }
     
@@ -4659,12 +4682,14 @@ public:
           for (unsigned i = 0, e = tupleExpr->getNumElements(); i != e; ++i) {
             if(archetypeTypesEqual(GetTypeOfExpr(skipInOutExpr(typeExpr)), GetTypeOfExpr(skipInOutExpr(tupleExpr->getElement(i))))) {
               archetypeTypeClarifications[typeExpr] = tupleExpr->getElement(i);
+              archetypeTypeIs[typeExpr] = archetypeTypeI++;
               break;
             }
           }
         }
         else if(archetypeTypesEqual(GetTypeOfExpr(skipInOutExpr(typeExpr)), GetTypeOfExpr(skipInOutExpr(E->getArg())))) {
           archetypeTypeClarifications[typeExpr] = E->getArg();
+          archetypeTypeIs[typeExpr] = archetypeTypeI++;
         }
       }
     }
