@@ -52,6 +52,7 @@ std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/i
 
 bool PRINT_RANGES = false;
 bool PRINT_EXTENSION = false;
+bool PRINT_NUMERIC_PROTOCOLS = false;
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
@@ -101,6 +102,37 @@ const std::unordered_map<std::string, bool> JS_LITERALS = {
   {"Swift.(file).UInt16", true},
   {"Swift.(file).UInt32", true},
   {"Swift.(file).UInt64", true}
+};
+const std::unordered_map<std::string, bool> NUMBERS = {
+  {"Swift.(file).Double", true},
+  {"Swift.(file).Float", true},
+  {"Swift.(file).Float80", true},
+  {"Swift.(file).Int", true},
+  {"Swift.(file).Int8", true},
+  {"Swift.(file).Int16", true},
+  {"Swift.(file).Int32", true},
+  {"Swift.(file).Int64", true},
+  {"Swift.(file).UInt", true},
+  {"Swift.(file).UInt8", true},
+  {"Swift.(file).UInt16", true},
+  {"Swift.(file).UInt32", true},
+  {"Swift.(file).UInt64", true}
+};
+const std::vector<std::string> NUMBER_PROTOCOLS = {
+  "Swift.(file).BinaryFloatingPoint",
+  "Swift.(file)._ExpressibleByBuiltinIntegerLiteral",
+  "Swift.(file).ExpressibleByIntegerLiteral",
+  "Swift.(file)._ExpressibleByBuiltinFloatLiteral",
+  "Swift.(file)._CVarArgPassedAsDouble",
+  "Swift.(file).FloatingPoint",
+  "Swift.(file).ExpressibleByFloatLiteral",
+  "Swift.(file).SignedNumeric",
+  "Swift.(file).Numeric",
+  "Swift.(file).AdditiveArithmetic",
+  "Swift.(file).FixedWidthInteger",
+  "Swift.(file).UnsignedInteger",
+  "Swift.(file).BinaryInteger",
+  "Swift.(file).SignedInteger"
 };
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
@@ -485,6 +517,42 @@ AllMembers getAllMembers(NominalTypeDecl *D, bool recursive) {
   AllMembers result;
   getAllMembers2(D, result, recursive);
   return result;
+}
+
+struct AllInherited{ std::list<Type> inherited; };
+void getAllInherited2(NominalTypeDecl *D, AllInherited &result) {
+  std::list<Type> inherited;
+  for (auto I : D->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
+  for (auto E : D->getExtensions()) {
+    for (auto I : E->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
+  }
+  for(auto inh : inherited) {
+    if(auto *inhD = inh->getNominalOrBoundGenericNominal()) {
+      getAllInherited2(inhD, result);
+    }
+  }
+}
+AllInherited getAllInherited(NominalTypeDecl *D) {
+  AllInherited result;
+  getAllInherited2(D, result);
+  return result;
+}
+
+bool isNumericType(Type baseType) {
+  if(auto *ND = baseType->getNominalOrBoundGenericNominal()) {
+    auto id = getMemberIdentifier(ND);
+    if(NUMBERS.count(id) || std::find(std::begin(NUMBER_PROTOCOLS), std::end(NUMBER_PROTOCOLS), id) != std::end(NUMBER_PROTOCOLS)) {
+      return true;
+    }
+  }
+  else if(auto archetypeType = dyn_cast<ArchetypeType>(baseType.getPointer())) {
+    for(auto *PD : archetypeType->getConformsTo()) {
+      if(std::find(std::begin(NUMBER_PROTOCOLS), std::end(NUMBER_PROTOCOLS), getMemberIdentifier(PD)) != std::end(NUMBER_PROTOCOLS)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /*struct ConformingToProtocol { std::list<NominalTypeDecl*> classes; };
@@ -1351,6 +1419,24 @@ namespace {
       }
     }
     
+    void printNumericProtocolsForModule(ModuleDecl *MD) {
+      SmallVector<Decl *, 64> displayDecls;
+      MD->getDisplayDecls(displayDecls);
+      
+      for (Decl *D : displayDecls) {
+        if(auto *NVD = dyn_cast<NominalTypeDecl>(D)) {
+          if(!NUMBERS.count(getMemberIdentifier(NVD))) continue;
+          OS << "'" << getName(NVD) << "':[";
+          for(auto inherited : getAllInherited(NVD).inherited) {
+            if(auto *subND = inherited->getNominalOrBoundGenericNominal()) {
+              OS << "'" << getMemberIdentifier(subND) << "',";
+            }
+          }
+          OS << "],";
+        }
+      }
+    }
+    
     void generateLibForModule(ModuleDecl *MD) {
       
       //SmallVector<Decl *, 64> topLevelDecls;
@@ -1542,6 +1628,9 @@ namespace {
                   else if(command == "\"-print-extension\"") {
                     PRINT_EXTENSION = skipCommand = true;
                   }
+                  else if(command == "\"-print-numeric-protocols\"") {
+                    PRINT_NUMERIC_PROTOCOLS = skipCommand = true;
+                  }
                 }
               }
             }
@@ -1577,6 +1666,9 @@ namespace {
       
       if(GENERATE_STD_LIB) {
         generateLibForModule(SF.getASTContext().getStdlibModule());
+      }
+      else if(PRINT_NUMERIC_PROTOCOLS) {
+        printNumericProtocolsForModule(SF.getASTContext().getStdlibModule());
       }
       else if(PRINT_RANGES) {
         for (Decl *D : SF.Decls) {
@@ -3086,7 +3178,7 @@ public:
       else if(auto *namedPattern = dyn_cast<NamedPattern>(node.second)) {
         if(initIfLetVars) {
           auto *VD = namedPattern->getDecl();
-          std::string declVarName = getName(VD) + "$ifLet" + std::to_string(ifLetVarI++);
+          std::string declVarName = getName(VD) + "_" + std::to_string(ifLetVarI++);
           nameReplacementsByDecl[VD] = declVarName;
           
           init += ", " + declVarName;
@@ -3853,6 +3945,11 @@ public:
           rString += "$get()";
         }
       }
+    }
+    
+    auto baseType = GetTypeOfExpr(E->getBase());
+    if(isNumericType(baseType) && lAssignmentExpr != E) {
+      rString = getTypeName(baseType) + ".prototype." + rString + "$get.call(#L)";
     }
     
     if(rString.find("#L") == std::string::npos) rString = "#L." + rString;
@@ -4639,7 +4736,11 @@ public:
     std::string rString = dumpToStr(rExpr);
     //that's possibly bodgy; if the right-hand side has replacements, we expect it to include an #L
     //we replace the #L with left-hand side there
-    if(rString.find("#L") != std::string::npos) {
+    auto baseType = GetTypeOfExpr(lExpr);
+    if(isNumericType(baseType)) {
+      lrString = getTypeName(baseType) + ".prototype." + rString + "$get.call(" + lString + ", #I, #AA)";
+    }
+    else if(rString.find("#L") != std::string::npos) {
       lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
     }
     else if(rString.find("#NOL") != std::string::npos) {
@@ -4665,6 +4766,8 @@ public:
     if(auto *metatypeType = dyn_cast<AnyMetatypeType>(B.getPointer())) {
       B = metatypeType->getInstanceType();
     }
+    
+    if(isNumericType(A) || isNumericType(B)) return false;
 
     if(auto *archetypeTypeA = dyn_cast<ArchetypeType>(A.getPointer())) {
       if(auto *archetypeTypeB = dyn_cast<ArchetypeType>(B.getPointer())) {
