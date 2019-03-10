@@ -519,11 +519,13 @@ AllMembers getAllMembers(NominalTypeDecl *D, bool recursive) {
   return result;
 }
 
-struct AllInherited{ std::list<Type> inherited; };
+struct AllInherited{ std::list<Decl*> members; std::list<Type> inherited; };
 void getAllInherited2(NominalTypeDecl *D, AllInherited &result) {
   std::list<Type> inherited;
+  for (auto *M : D->getMembers()) result.members.push_back(M);
   for (auto I : D->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
   for (auto E : D->getExtensions()) {
+    for (auto *M : E->getMembers()) result.members.push_back(M);
     for (auto I : E->getInherited()) {result.inherited.push_back(I.getType());inherited.push_back(I.getType());}
   }
   for(auto inh : inherited) {
@@ -544,13 +546,17 @@ bool isNumericType(Type baseType) {
     if(NUMBERS.count(id) || std::find(std::begin(NUMBER_PROTOCOLS), std::end(NUMBER_PROTOCOLS), id) != std::end(NUMBER_PROTOCOLS)) {
       return true;
     }
+    if(id == "Swift.(file).Any" || id == "Swift.(file).AnyObject") return true;
   }
   else if(auto archetypeType = dyn_cast<ArchetypeType>(baseType.getPointer())) {
+    bool unclear = true;
     for(auto *PD : archetypeType->getConformsTo()) {
       if(std::find(std::begin(NUMBER_PROTOCOLS), std::end(NUMBER_PROTOCOLS), getMemberIdentifier(PD)) != std::end(NUMBER_PROTOCOLS)) {
         return true;
       }
+      unclear = false;
     }
+    if(unclear) return true;
   }
   return false;
 }
@@ -3768,7 +3774,38 @@ public:
         [&](bool isInterpolation, CallExpr *segment) -> void {
         if(isFirst) isFirst = false;
         else OS << ") + (";
-        printRec(segment->getArg());
+        Expr *chunk = segment->getArg();
+        Type type = GetTypeOfExpr(chunk);
+        if(auto *ND = type->getNominalOrBoundGenericNominal()) {
+          auto id = getMemberIdentifier(ND);
+          if(id == "Swift.(file).Optional") {
+            OS << "_printOptional(";
+            printRec(chunk);
+            OS << ")";
+            return;
+          }
+          else if(id != "Swift.(file).String" && id != "Swift.(file).Character") {
+            //manually creating member_ref_expr to mimic `.description`
+            VarDecl *description = nullptr;
+            for (Decl *member : getAllInherited(ND).members) {
+              if(auto *VD = dyn_cast<VarDecl>(member)) {
+                if(getName(VD) == "description") {
+                  description = VD;
+                  break;
+                }
+              }
+            }
+            if(description) {
+              ASTContext &C = type->getASTContext();
+              auto storedRef = new (C) MemberRefExpr(chunk, SourceLoc(), description,
+                                                     DeclNameLoc(), /*Implicit=*/true,
+                                                     AccessSemantics::DirectToStorage);
+              storedRef->setType(description->getInterfaceType());
+              chunk = storedRef;
+            }
+          }
+        }
+        printRec(chunk);
     });
     OS << "))";
   }
@@ -4738,7 +4775,7 @@ public:
     //we replace the #L with left-hand side there
     auto baseType = GetTypeOfExpr(lExpr);
     if(isNumericType(baseType)) {
-      lrString = getTypeName(baseType) + ".prototype." + rString + "$get.call(" + lString + ", #I, #AA)";
+      lrString = getTypeName(baseType) + ".prototype." + rString + ".call(" + lString + ", #I, #AA)";
     }
     else if(rString.find("#L") != std::string::npos) {
       lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
