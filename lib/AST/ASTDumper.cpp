@@ -145,6 +145,11 @@ std::unordered_map<std::string, bool> PASS_INFO = {
   {"Swift.(file).numericCast(_:T)", true}
 };
 
+//Double.init needs to fall back to BinaryFloatingPoint, because implementation there
+//but falls back to FloatingPoint, because that's protocol declaration
+//ignoring implementation means it's just using the default protocol implementation, which works for us
+const std::list<std::string> LIB_SKIP_MEMBERS = {"Swift.(file).Double.init(_:Source)", "Swift.(file).Float80.init(_:Source)", "Swift.(file).Float.init(_:Source)"};
+
 std::unordered_map<std::string, std::string> LIB_ADDITIONAL_BODY;
 
 std::unordered_map<std::string, bool> libFunctionOverloadedCounts = {};
@@ -1879,8 +1884,11 @@ namespace {
       bool protocolImplementation = false;
       for (Decl *subD : members) {
         if(auto *funcD = dyn_cast<FuncDecl>(subD)) {
-          if(funcD->isImplicit() && std::string(funcD->getBaseName().userFacingName()) == "__derived_enum_equals") {
-            continue;
+          if(funcD->isImplicit() && std::string(funcD->getBaseName().userFacingName()) == "__derived_enum_equals") continue;
+        }
+        if(LIB_GENERATE_MODE) {
+          if(auto *subVD = dyn_cast<ValueDecl>(subD)) {
+            if(std::find(std::begin(LIB_SKIP_MEMBERS), std::end(LIB_SKIP_MEMBERS), getMemberIdentifier(subVD)) != std::end(LIB_SKIP_MEMBERS)) continue;
           }
         }
         OS << '\n';
@@ -2488,16 +2496,7 @@ namespace {
         }
       }
       
-      bool isMixin = false;
-      auto *constructorDecl = dyn_cast<ConstructorDecl>(FD);
-      if(auto *ND = FD->getDeclContext()->getSelfNominalTypeDecl()) {
-        isMixin = LIB_MIXINS.count(getMemberIdentifier(ND));
-      }
-      if(constructorDecl && isMixin && params && params->size() == 1) {
-        //constructor
-        result.str = "return " + paramRepr[0];
-      }
-      else if(FD->isOperator()) {
+      if(FD->isOperator()) {
         //operator
         std::string operatorFix = getOperatorFix(FD);
         bool isOverflow = userFacingName[0] == '&' && userFacingName != "&" && userFacingName != "&&" && userFacingName != "&=";
@@ -2523,9 +2522,6 @@ namespace {
         result.str = "throw 'unsupported method " + getMemberIdentifier(NameD) + " in ' + this.constructor.name";
       }
       std::string libBody = getLibBody(NameD, isAssignment);
-      if(constructorDecl && isMixin && libBody.length() >= 6 && libBody.substr(libBody.length() - 6) == "return") {
-        libBody = "#NO-BODY";
-      }
       if(libBody != "#NO-BODY") {
         result.str = libBody;
       }
