@@ -54,6 +54,8 @@ bool PRINT_RANGES = false;
 bool PRINT_EXTENSION = false;
 bool PRINT_NUMERIC_PROTOCOLS = false;
 
+bool WRAP_OPTIONALS = false;
+
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
 const std::string RESERVED_VAR_NAMES[] = {"abstract","else","instanceof","super","switch","break","export","interface","synchronized","byte","extends","let","this","case","false","throw","catch","final","native","throws","finally","new","class","null","true","const","for","package","try","continue","function","private","typeof","debugger","goto","protected","var","default","if","public","delete","implements","return","volatile","do","import","while","in","of","static","with","alert","frames","outerHeight","all","frameRate","outerWidth","anchor","function","packages","anchors","getClass","pageXOffset","area","hasOwnProperty","pageYOffset","hidden","parent","assign","history","parseFloat","blur","image","parseInt","button","images","password","checkbox","Infinity","pkcs11","clearInterval","isFinite","plugin","clearTimeout","isNaN","prompt","clientInformation","isPrototypeOf","propertyIsEnum","close","java","prototype","closed","radio","confirm","reset","constructor","screenX","crypto","screenY","Date","innerHeight","scroll","decodeURI","innerWidth","secure","decodeURIComponent","layer","select","defaultStatus","layers","self","document","length","setInterval","element","link","setTimeout","elements","location","status","embed","Math","embeds","mimeTypes","submit","encodeURI","name","taint","encodeURIComponent","NaN","text","escape","navigate","textarea","eval","navigator","top","event","Number","toString","fileUpload","Object","undefined","focus","offscreenBuffering","unescape","form","open","untaint","forms","opener","valueOf","frame","option","window","onbeforeunload","ondragdrop","onkeyup","onmouseover","onblur","onerror","onload","onmouseup","ondragdrop","onfocus","onmousedown","onreset","onclick","onkeydown","onmousemove","onsubmit","oncontextmenu","onkeypress","onmouseout","onunload", "arguments"};
@@ -432,12 +434,13 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   if(!D) return "!NO_DUPLICATE";
   
   std::string name;
+  std::string memberIdentifier = getMemberIdentifier(D);
   
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
-    name = getFunctionName(functionDecl, getMemberIdentifier(D));
+    name = getFunctionName(functionDecl, memberIdentifier);
   }
   else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
-    name = getFunctionName(subscriptDecl, getMemberIdentifier(D));
+    name = getFunctionName(subscriptDecl, memberIdentifier);
   }
   else if(D->hasName()) {
     name = D->getBaseName().userFacingName();
@@ -446,8 +449,11 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
     name = "_";
   }
   
-  if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
+  if(LIB_GENERATE_MODE && LIB_MIXINS.count(memberIdentifier)) {
     name = "MIO_Mixin_" + name;
+  }
+  if(memberIdentifier.find("UIKit.(file).") == 0) {
+    name = "M" + name;
   }
   
   if(nameReplacements.count(name)) {
@@ -2015,7 +2021,11 @@ namespace {
           //so we're trying to mimick TuplePattern in that case
           std::vector<unsigned> elAccess(access);
           if(auto *wrappedChild = dyn_cast<TuplePattern>(wrapped->getSubPattern())){}
-          else elAccess.push_back(0);
+          else {
+            std::string memberIdentifier = getMemberIdentifier(wrapped->getElementDecl());
+            bool isOptional = memberIdentifier == "Swift.(file).Optional.some" || memberIdentifier == "Swift.(file).Optional.none";
+            if(WRAP_OPTIONALS || !isOptional) elAccess.push_back(0);
+          }
           walkPattern(wrapped->getSubPattern(), info, elAccess);
         }
       }
@@ -2023,7 +2033,7 @@ namespace {
         info.push_back(std::make_pair(access, P));
         //optional always has 1 associated value, so always mimick TuplePattern
         std::vector<unsigned> elAccess(access);
-        elAccess.push_back(0);
+        if(WRAP_OPTIONALS) elAccess.push_back(0);
         walkPattern(wrapped->getSubPattern(), info, elAccess);
       }
       else {
@@ -3138,8 +3148,13 @@ public:
     std::string condition = "((" + ifLetVar + " = " + dumpToStr(initExpr) + ")||true)";
     
     if(forIn) {
-      condition += " && " + ifLetVar + ".rawValue == 'some'";
-      ifLetVar += "[0]";
+      if(WRAP_OPTIONALS) {
+        condition += " && " + ifLetVar + ".rawValue == 'some'";
+        ifLetVar += "[0]";
+      }
+      else {
+        condition += " && " + ifLetVar + " != null";
+      }
     }
     
     auto conditions = printPatternCondition(ifLetVar, P, true);
@@ -3160,17 +3175,36 @@ public:
       }
       else if(auto *enumElementPattern = dyn_cast<EnumElementPattern>(node.second)) {
         if(condition.length()) condition += " && ";
-        condition += nameReplacements[varName] + ".rawValue == ";
-        std::string str;
-        llvm::raw_string_ostream stream(str);
-        stream << enumElementPattern->getName();
-        condition += getTypeName(enumElementPattern->getParentType().getType()) + '.' + stream.str();
-        if(enumElementPattern->getElementDecl()->hasAssociatedValues()) condition += "()";
-        condition += ".rawValue";
+        int optional = 0;
+        if(!WRAP_OPTIONALS) {
+          std::string memberIdentifier = getMemberIdentifier(enumElementPattern->getElementDecl());
+          if(memberIdentifier == "Swift.(file).Optional.some") optional = 1;
+          else if(memberIdentifier == "Swift.(file).Optional.none") optional = 2;
+        }
+        if(!optional) {
+          condition += nameReplacements[varName] + ".rawValue == ";
+          std::string str;
+          llvm::raw_string_ostream stream(str);
+          stream << enumElementPattern->getName();
+          condition += getTypeName(enumElementPattern->getParentType().getType()) + '.' + stream.str();
+          if(enumElementPattern->getElementDecl()->hasAssociatedValues()) condition += "()";
+          condition += ".rawValue";
+        }
+        else if(optional == 1) {
+          condition += nameReplacements[varName] + " != null";
+        }
+        else if(optional == 2) {
+          condition += nameReplacements[varName] + " == null";
+        }
       }
       else if(auto *optionalSomePattern = dyn_cast<OptionalSomePattern>(node.second)) {
         if(condition.length()) condition += " && ";
-        condition += nameReplacements[varName] + ".rawValue == 'some'";
+        if(WRAP_OPTIONALS) {
+          condition += nameReplacements[varName] + ".rawValue == 'some'";
+        }
+        else {
+          condition += nameReplacements[varName] + " != null";
+        }
       }
       else if(auto *isPattern = dyn_cast<IsPattern>(node.second)) {
         if(condition.length()) condition += " && ";
@@ -4412,9 +4446,9 @@ public:
   }
   void visitInjectIntoOptionalExpr(InjectIntoOptionalExpr *E) {
     /*printCommon(E, "inject_into_optional") << '\n';*/
-    OS << "_injectIntoOptional(";
+    if(WRAP_OPTIONALS) OS << "_injectIntoOptional(";
     printRec(E->getSubExpr());
-    OS << ")";
+    if(WRAP_OPTIONALS) OS << ")";
     /*PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
   }
   void visitClassMetatypeToObjectExpr(ClassMetatypeToObjectExpr *E) {
@@ -4742,6 +4776,9 @@ public:
           if(replacement.length()) {
             lString = replacement;
           }
+          else if(!WRAP_OPTIONALS && getMemberIdentifier(initDecl) == "Swift.(file)._OptionalNilComparisonType.init(nilLiteral:())") {
+            lString = "null";
+          }
           else {
             lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #I, #AA)";
             lString = handleInfo(lString, initDeclRef);
@@ -4847,6 +4884,14 @@ public:
     printApplyExpr(E->getFn(), E->getArg());
   }
   void visitDotSyntaxCallExpr(DotSyntaxCallExpr *E) {
+    if(!WRAP_OPTIONALS) {
+      if(auto *declRefExpr = dyn_cast<DeclRefExpr>(E->getFn())) {
+        if(getMemberIdentifier(declRefExpr->getDecl()) == "Swift.(file).Optional.none") {
+          OS << "null";
+          return;
+        }
+      }
+    }
     printApplyExpr(skipInOutExpr(E->getArg()), E->getFn(), ".#AA");
   }
   void visitConstructorRefCallExpr(ConstructorRefCallExpr *E) {
@@ -4883,9 +4928,9 @@ public:
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    if(name == "conditional_checked_cast_expr") OS << "_injectIntoOptional(";
+    if(name == "conditional_checked_cast_expr" && WRAP_OPTIONALS) OS << "_injectIntoOptional(";
     printRec(E->getSubExpr());
-    if(name == "conditional_checked_cast_expr") OS << ")";
+    if(name == "conditional_checked_cast_expr" && WRAP_OPTIONALS) OS << ")";
   }
   void visitForcedCheckedCastExpr(ForcedCheckedCastExpr *E) {
     printExplicitCastExpr(E, "forced_checked_cast_expr");
@@ -4965,11 +5010,20 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
     auto tempVal = getTempVal(dumpToStr(E->getSubExpr()));
-    std::string condition = tempVal.expr + ".rawValue === 'some'";
+    std::string condition;
+    if(WRAP_OPTIONALS) {
+      condition = tempVal.expr + ".rawValue === 'some'";
+    }
+    else {
+      condition = tempVal.expr + " != null";
+    }
     
     optionalCondition[optionalCondition.size() - 1] = optionalCondition.back().length() ? optionalCondition.back() + " && " + condition : condition;
     
-    OS << tempVal.name << "[0]";
+    OS << tempVal.name;
+    if(WRAP_OPTIONALS) {
+      OS << "[0]";
+    }
   }
   void visitOptionalEvaluationExpr(OptionalEvaluationExpr *E) {
     /*printCommon(E, "optional_evaluation_expr") << '\n';
@@ -4987,9 +5041,9 @@ public:
     std::string expr = dumpToStr(subExpr);
     
     if(optionalCondition.back().length()) {
-      if(injectIntoOptional) OS << "_injectIntoOptional";
+      if(injectIntoOptional && WRAP_OPTIONALS) OS << "_injectIntoOptional";
       OS << "((" << optionalCondition.back() << ") ? (" << expr << ") : ";
-      if(injectIntoOptional) OS << "null";
+      if(injectIntoOptional || !WRAP_OPTIONALS) OS << "null";
       else OS << "Optional.none";
       OS << ")";
     }
@@ -5002,7 +5056,9 @@ public:
   void visitForceValueExpr(ForceValueExpr *E) {
     //printCommon(E, "force_value_expr") << '\n';
     printRec(E->getSubExpr());
-    OS << "[0]";
+    if(WRAP_OPTIONALS) {
+      OS << "[0]";
+    }
     //PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
   void visitOpenExistentialExpr(OpenExistentialExpr *E) {
