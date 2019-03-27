@@ -335,7 +335,7 @@ std::string cloneStruct(Expr *rExpr, std::string baseStr) {
 }
 
 bool isNative(std::string uniqueIdentifier) {
-  return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0 || uniqueIdentifier.find("ObjectiveC.(file).") == 0 || uniqueIdentifier.find("Darwin.(file).") == 0 || uniqueIdentifier.find("Foundation.(file).") == 0 || PRINT_EXTENSION;
+  return uniqueIdentifier.find("Swift.(file).") == 0 || uniqueIdentifier.find("XCTest.(file).") == 0 || uniqueIdentifier.find("ObjectiveC.(file).") == 0 || uniqueIdentifier.find("Darwin.(file).") == 0 || uniqueIdentifier.find("Foundation.(file).") == 0 || uniqueIdentifier.find("UIKit.(file).") == 0 || PRINT_EXTENSION;
 }
 std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
   std::string userFacingName = D->getBaseName().userFacingName();
