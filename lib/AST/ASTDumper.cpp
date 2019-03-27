@@ -432,12 +432,13 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   if(!D) return "!NO_DUPLICATE";
   
   std::string name;
+  std::string memberIdentifier = getMemberIdentifier(D);
   
   if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
-    name = getFunctionName(functionDecl, getMemberIdentifier(D));
+    name = getFunctionName(functionDecl, memberIdentifier);
   }
   else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
-    name = getFunctionName(subscriptDecl, getMemberIdentifier(D));
+    name = getFunctionName(subscriptDecl, memberIdentifier);
   }
   else if(D->hasName()) {
     name = D->getBaseName().userFacingName();
@@ -446,8 +447,13 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
     name = "_";
   }
   
-  if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
+  if(LIB_GENERATE_MODE && LIB_MIXINS.count(memberIdentifier)) {
     name = "MIO_Mixin_" + name;
+  }
+  if(memberIdentifier.find("UIKit.(file).") == 0) {
+    if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
+      name = "M" + name;
+    }
   }
   
   if(nameReplacements.count(name)) {
