@@ -3718,10 +3718,12 @@ public:
   }
 
   void visitNilLiteralExpr(NilLiteralExpr *E) {
-    printCommon(E, "nil_literal_expr");
+    /*printCommon(E, "nil_literal_expr");
     PrintWithColorRAII(OS, LiteralValueColor) << " initializer=";
     E->getInitializer().dump(PrintWithColorRAII(OS, LiteralValueColor).getOS());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", '" << getName(E->getInitializer().getDecl()) << "', {})";
   }
 
   void visitIntegerLiteralExpr(IntegerLiteralExpr *E) {
@@ -4034,6 +4036,7 @@ public:
       }
     }
     
+    //TODO doesn't work for Self : FloatingPoint
     auto baseType = GetTypeOfExpr(E->getBase());
     if(isNumericType(baseType) && lAssignmentExpr != E) {
       rString = getTypeName(baseType) + ".prototype." + rString + "$get.call(#L)";
@@ -4246,7 +4249,7 @@ public:
     OS << "[\"" << std::to_string(E->getFieldNumber()) << "\"]";
   }
   void visitDestructureTupleExpr(DestructureTupleExpr *E) {
-    printCommon(E, "destructure_tuple_expr");
+    /*printCommon(E, "destructure_tuple_expr");
     OS << " destructured=";
     PrintWithColorRAII(OS, ParenthesisColor) << '(';
     Indent += 2;
@@ -4255,11 +4258,14 @@ public:
       printRec(elt);
     }
     Indent -= 2;
-    PrintWithColorRAII(OS, ParenthesisColor) << ")\n";
+    PrintWithColorRAII(OS, ParenthesisColor) << ")\n";*/
     printRec(E->getSubExpr());
-    OS << "\n";
+    /*OS << "\n";
     printRec(E->getResultExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*destructure_tuple_expr";
+    printRec(E->getResultExpr());
+    OS << "*/";
   }
   void visitArgumentShuffleExpr(ArgumentShuffleExpr *E) {
     /*printCommon(E, "argument_shuffle_expr");
@@ -4790,20 +4796,6 @@ public:
     OS << '\n';
     printRec(E->getArg());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    
-    if (auto rTuple = dyn_cast<TupleExpr>(rExpr)) {
-      if (rTuple->getNumElements() == 1) {
-        if (auto intExpr = dyn_cast<IntegerLiteralExpr>(rTuple->getElement(0))) {
-          return printRec(intExpr);
-        }
-        if (auto floatExpr = dyn_cast<FloatLiteralExpr>(rTuple->getElement(0))) {
-          return printRec(floatExpr);
-        }
-        if (auto boolExpr = dyn_cast<BooleanLiteralExpr>(rTuple->getElement(0))) {
-          return printRec(boolExpr);
-        }
-      }
-    }
     
     std::string lString;
     
