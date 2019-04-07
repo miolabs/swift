@@ -51,6 +51,7 @@ bool GENERATE_IMPORTED_MODULE = false;
 std::string LIB_GENERATE_PATH = "/Users/bubulkowanorka/projects/antlr4-visitor/include/";
 
 bool PRINT_RANGES = false;
+bool PRINT_MEMBERS = false;
 bool PRINT_EXTENSION = false;
 bool PRINT_NUMERIC_PROTOCOLS = false;
 
@@ -1191,6 +1192,9 @@ namespace {
       if(GENERATE_IMPORTED_MODULE) {
         generateLibForModule(ID->getModule());
       }
+      else if(PRINT_MEMBERS) {
+        printMembersForModule(ID->getModule());
+      }
     }
 
     void visitExtensionDecl(ExtensionDecl *ED) {
@@ -1455,18 +1459,46 @@ namespace {
       }
     }
     
-    void generateLibForModule(ModuleDecl *MD) {
-      
-      //SmallVector<Decl *, 64> topLevelDecls;
-      //MD->getTopLevelDecls(topLevelDecls);
+    void printMembersForModule(ModuleDecl *MD) {
       SmallVector<Decl *, 64> displayDecls;
       MD->getDisplayDecls(displayDecls);
-      //SmallVector<TypeDecl *, 64> localTypeDecls;
-      //MD->getLocalTypeDecls(localTypeDecls);
+      
+      for (Decl *D : displayDecls) {
+        if(auto *NVD = dyn_cast<NominalTypeDecl>(D)) {
+          OS << '\n' << getName(NVD) << ":[";
+          auto members = getAllMembers(NVD, false).members;
+          for(Decl *member : members) {
+            if(auto *memberVD = dyn_cast<ValueDecl>(member)) {
+              bool isOptional = false;
+              std::string argsStr;
+              if(auto *memberVarD = dyn_cast<VarDecl>(member)) {
+                if(auto *OT = dyn_cast<OptionalType>(memberVarD->getType().getPointer())) {
+                  isOptional = true;
+                }
+              }
+              else if(auto *memberFD = dyn_cast<AbstractFunctionDecl>(member)) {
+                for (auto P : *memberFD->getParameters()) {
+                  if(auto *OT = dyn_cast<OptionalType>(P->getType().getPointer())) {
+                    argsStr += "1,";
+                  }
+                  else argsStr += "0,";
+                }
+              }
+              OS << '"' << getName(memberVD) << "\"," << isOptional << ",[" << argsStr << "],";
+            }
+          }
+          OS << "],";
+        }
+      }
+    }
+    
+    void generateLibForModule(ModuleDecl *MD) {
       
       std::cout << "\n" << MD->getName().get();
-
-
+      
+      SmallVector<Decl *, 64> displayDecls;
+      MD->getDisplayDecls(displayDecls);
+      
       std::error_code OutErrorInfoOrder;
       llvm::raw_fd_ostream orderFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/inclusionOrder.txt"), OutErrorInfoOrder, llvm::sys::fs::F_None);
       
@@ -1517,7 +1549,7 @@ namespace {
         outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
         std::error_code OutErrorInfo;
         llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/" + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
-        PrintDecl(outFile, Indent + 2).visit(D);
+        if(outName == "MUIViewController") PrintDecl(OS, Indent + 2).visit(D);
         outFile << "\n\n";
         outFile.close();
       }
@@ -1640,6 +1672,9 @@ namespace {
                   else if(command == "\"-generate-imported-module\"") {
                     LIB_GENERATE_MODE = GENERATE_IMPORTED_MODULE = skipCommand = true;
                   }
+                  else if(command == "\"-print-members\"") {
+                    PRINT_MEMBERS = skipCommand = true;
+                  }
                   else if(command == "\"-print-ranges\"") {
                     PRINT_RANGES = skipCommand = true;
                   }
@@ -1736,6 +1771,13 @@ namespace {
       printStorageImpl(VD);
       printAccessors(VD);
       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      //sometimes there's no pattern binding, so visitPatternBindingDecl will not catch the declaration
+      //so we need to print it from here
+      //so far sighted only with UIKit, e.g. UIViewController.view
+      if(!VD->getParentPattern()) {
+        //TODO
+      }
     }
 
     void printStorageImpl(AbstractStorageDecl *D) {
