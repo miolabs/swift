@@ -137,7 +137,7 @@ const std::vector<std::string> NUMBER_PROTOCOLS = {
 };
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
-  {"Swift.(file).Dictionary", "(obj, $info){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
+  {"Swift.(file).Dictionary", "(obj, $info?){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
 };
 
 const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach", "startsWith", "endsWith"};
@@ -1779,7 +1779,7 @@ namespace {
       //so we need to print it from here
       //so far sighted only with UIKit, e.g. UIViewController.view
       if(!VD->getParentPattern()) {
-        //TODO
+        OS << '\n' << varPrefix(VD) << getName(VD);
       }
     }
 
@@ -2086,6 +2086,17 @@ namespace {
       std::string tupleInit = "";
       std::vector<std::string> varNames = {};
     };
+    std::string varPrefix(VarDecl *VD) {
+      std::string result;
+      if(!VD->getDeclContext()->isTypeContext()) {
+        result += VD->isLet() ? "const " : "let ";
+      }
+      else {
+        if(VD->isStatic()) result += "static ";
+        if(VD->isLet()) result += "readonly ";
+      }
+      return result;
+    }
     SinglePatternBinding singlePatternBinding(FlattenedPattern &flattened, Expr *initExpr) {
       
       SinglePatternBinding info;
@@ -2106,13 +2117,7 @@ namespace {
           
           if(!info.varDecl) {
             info.varDecl = VD;
-            if(!VD->getDeclContext()->isTypeContext()) {
-              info.varPrefix += VD->isLet() ? "const " : "let ";
-            }
-            else {
-              if(VD->isStatic()) info.varPrefix += "static ";
-              if(VD->isLet()) info.varPrefix += "readonly ";
-            }
+            info.varPrefix = varPrefix(VD);
             
             if(node.first.size()) {
               info.varName += "$tuple";
@@ -2443,7 +2448,7 @@ namespace {
       if(printInfo) {
         if(first) first = false;
         else signature += ", ";
-        signature += "$info";
+        signature += "$info?";
       }
       return signature;
     }
