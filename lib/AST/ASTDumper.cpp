@@ -137,7 +137,7 @@ const std::vector<std::string> NUMBER_PROTOCOLS = {
 };
 
 const std::unordered_map<std::string, std::string> LIB_CLONE_STRUCT_FILLS = {
-  {"Swift.(file).Dictionary", "($info, obj){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
+  {"Swift.(file).Dictionary", "(obj, $info){obj.forEach((val, prop) => this.set(prop, _cloneStruct(val)))}"}
 };
 
 const std::list<std::string> LIB_OVERRIDING_FUNCTIONS = {"reduce", "indexOf", "lastIndexOf", "map", "filter", "sort", "forEach", "startsWith", "endsWith"};
@@ -1549,7 +1549,7 @@ namespace {
         outName = std::regex_replace(outName, std::regex("MIO_Mixin_"), "");
         std::error_code OutErrorInfo;
         llvm::raw_fd_ostream outFile(llvm::StringRef(LIB_GENERATE_PATH + MD->getName().get() + "/" + outName + ".ts"), OutErrorInfo, isExtension ? llvm::sys::fs::F_Append : llvm::sys::fs::F_None);
-        if(outName == "MUIViewController") PrintDecl(OS, Indent + 2).visit(D);
+        PrintDecl(outFile, Indent + 2).visit(D);
         outFile << "\n\n";
         outFile.close();
       }
@@ -1843,7 +1843,7 @@ namespace {
       else {
         OS << '"' << getName(EED) << '"';
       }
-      OS << ", ...Array.from(arguments).slice(1)})}";
+      OS << ", ...Array.from(arguments)})}";
     }
     
     void printAnyStructSignature(std::string definition, std::string name, NominalTypeDecl *D) {
@@ -1919,11 +1919,6 @@ namespace {
       }
       if(LIB_GENERATE_MODE && LIB_MIXINS.count(getMemberIdentifier(D))) {
         OS << "\nstatic readonly $mixin = true";
-      }
-      if(kind != "protocol") {
-        OS << "\nstatic readonly $infoAddress = '";
-        if(!LIB_GENERATE_MODE) OS << D->getInnermostDeclContext();
-        OS << "'";
       }
 
       if(LIB_GENERATE_MODE && LIB_CLONE_STRUCT_FILLS.count(getMemberIdentifier(D))) {
@@ -2432,16 +2427,6 @@ namespace {
     std::string printFuncParams(ParameterList *params, DeclContext *context = nullptr, bool printInfo = true) {
       std::string signature = "";
       bool first = true;
-      if(printInfo) {
-        signature += "$info";
-        first = false;
-        if(context && !LIB_GENERATE_MODE && !PRINT_EXTENSION) {
-          std::string str;
-          llvm::raw_string_ostream stream(str);
-          stream << context;
-          signature += stream.str();
-        }
-      }
       if(params) {
         for (auto P : *params) {
           if(first) first = false;
@@ -2451,6 +2436,11 @@ namespace {
           printParameter(P, parameterStream);
           signature += parameterStream.str();
         }
+      }
+      if(printInfo) {
+        if(first) first = false;
+        else signature += ", ";
+        signature += "$info";
       }
       return signature;
     }
@@ -2576,7 +2566,8 @@ namespace {
       }
       
       if(result.str.find("#AA") != std::string::npos) {
-        result.str = std::regex_replace(result.str, std::regex("#AA"), regex_escape(printFuncParams(params, nullptr, false)));
+        std::string args = printFuncParams(params, nullptr, false);
+        result.str = std::regex_replace(result.str, std::regex(args.length() ? "#AA" : "#AA,?"), regex_escape(args));
       }
       else if(params) {
         int i = 0;
@@ -3961,12 +3952,7 @@ public:
     }
     if(isSelf) {
       if(lAssignmentExpr == E) {
-        std::string str;
-        llvm::raw_string_ostream stream(str);
-        stream << openFunctions.back()->getInnermostDeclContext();
-        string = "$info";
-        if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) string += stream.str();
-        string += ".$setThis(_this = _cloneStruct(#ASS))";
+        string = "$info.$setThis(_this = _cloneStruct(#ASS))";
       }
       else {
         string = "_this";
@@ -4171,7 +4157,14 @@ public:
         printSemanticExpr(E->getSemanticExpr());
         PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", 'initArrayLiteralArray', {";//Element: ";
+    OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", 'initArrayLiteralArray', [";
+    bool first = true;
+    for (auto elt : E->getElements()) {
+      if(first) first = false;
+      else OS << ", ";
+      printRec(elt);
+    }
+    OS << "], {";//Element: ";
     
     /*TypeBase *maybeBoundGenericType = GetTypeOfExpr(E).getPointer();
     if(auto arraySliceType = dyn_cast<ArraySliceType>(maybeBoundGenericType)) maybeBoundGenericType = arraySliceType->getSinglyDesugaredType();
@@ -4179,14 +4172,7 @@ public:
       OS << getTypeName(boundGenericType->getGenericArgs()[0]);
     }*/
 
-    OS << "}, [";
-    bool first = true;
-    for (auto elt : E->getElements()) {
-      if(first) first = false;
-      else OS << ", ";
-      printRec(elt);
-    }
-    OS << "])";
+    OS << "})";
   }
   void visitDictionaryExpr(DictionaryExpr *E) {
     /*printCommon(E, "dictionary_expr");
@@ -4234,17 +4220,18 @@ public:
     else {
       string = "#L." + getName(E->getMember().getDecl()) + "$";
       if(lAssignmentExpr == E) {
-        string += "set(#I, #ASS, #AA)";
+        string += "set(#ASS, #AA, #I)";
       }
       else {
-        string += "get(#I, #AA)";
+        string += "get(#AA, #I)";
       }
     }
     
     string = std::regex_replace(string, std::regex("#L"), regex_escape(dumpToStr(skipInOutExpr(E->getBase()))));
     
     functionArgsCall = skipWrapperExpressions(E->getIndex());
-    string = std::regex_replace(string, std::regex("#AA"), regex_escape(dumpToStr(skipInOutExpr(E->getIndex()))));
+    std::string args = dumpToStr(skipInOutExpr(E->getIndex()));
+    string = std::regex_replace(string, std::regex(args.length() ? "#AA" : "#AA,?"), regex_escape(args));
     
     string = handleInfo(string, E->getBase(), lAssignmentExpr == E);
     
@@ -4391,7 +4378,13 @@ public:
       else if(E->getElementMapping()[resultArgI] == -2) {
         if(resultArgI) OS << ", ";
         
-        OS << "_create(Array, 'initBuffer', {";//Element: ";
+        OS << "_create(Array, 'initBuffer', [";
+        
+        for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size() && srcArgI < arguments.size(); varArgI++) {
+          if(varArgI) OS << ", ";
+          OS << dumpToStr(arguments[srcArgI++]);
+        }
+        OS << "], {";//Element: ";
         
         /*if(auto *FD = dyn_cast<AbstractFunctionDecl>(E->getDefaultArgsOwner().getDecl())) {
           OS << getTypeName(FD->getParameters()->get(resultArgI)->getType());
@@ -4400,13 +4393,7 @@ public:
           llvm_unreachable("abstract function decl expected as getDefaultArgsOwner");
         }*/
         
-        OS << "}, [";
-        
-        for(unsigned varArgI = 0; varArgI < E->getVariadicArgs().size() && srcArgI < arguments.size(); varArgI++) {
-          if(varArgI) OS << ", ";
-          OS << dumpToStr(arguments[srcArgI++]);
-        }
-        OS << "])";
+        OS << "})";
       }
       else {
         OS << (resultArgI ? ", " : "") << "'?3'";
@@ -4822,7 +4809,7 @@ public:
     return lrString;
   }
 
-  void printApplyExpr(Expr *lExpr, Expr *rExpr, std::string defaultSuffix = "(#I, #AA)") {
+  void printApplyExpr(Expr *lExpr, Expr *rExpr, std::string defaultSuffix = "(#AA, #I)") {
     /*printCommon(E, NodeName);
     if (E->isSuper())
       PrintWithColorRAII(OS, ExprModifierColor) << " super";
@@ -4849,7 +4836,7 @@ public:
             lString = replacement;
           }
           else {
-            lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #I, #AA)";
+            lString = "_create(" + dumpToStr(lConstructor->getArg()) + ", '" + getName(initDecl) + "', #AA, #I)";
             lString = handleInfo(lString, initDeclRef);
           }
           defaultSuffix = "";
@@ -4877,7 +4864,7 @@ public:
     //we replace the #L with left-hand side there
     auto baseType = GetTypeOfExpr(lExpr);
     if(isNumericType(baseType)) {
-      lrString = getTypeName(baseType) + ".prototype." + rString + ".call(" + lString + ", #I, #AA)";
+      lrString = getTypeName(baseType) + ".prototype." + rString + ".call(" + lString + ", #AA, #I)";
     }
     else if(rString.find("#L") != std::string::npos) {
       lrString = std::regex_replace(rString, std::regex("#L"), regex_escape(lString));
@@ -4888,7 +4875,7 @@ public:
     //otherwise we replace #AA in left-hand side; if no #AA present, we assume the default .#AA or (#AA)
     else {
       if(lString.find("#A") == std::string::npos) lString += defaultSuffix;
-      lrString = std::regex_replace(lString, std::regex("#AA"), regex_escape(rString));
+      lrString = std::regex_replace(lString, std::regex(rString.length() ? "#AA" : "#AA,?"), regex_escape(rString));
     }
     
     lrString = handleInfo(lrString, lExpr);
@@ -6032,7 +6019,6 @@ namespace {
 //          }
 //        }
 //        OS << "$info";
-//        if(!LIB_GENERATE_MODE && !PRINT_EXTENSION) OS << owningDC;
 //        if(!noGenericAccess) OS << "." << T->getFullName();
 //      }
       
