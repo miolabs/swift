@@ -54,6 +54,7 @@ bool PRINT_RANGES = false;
 bool PRINT_MEMBERS = false;
 bool PRINT_EXTENSION = false;
 bool PRINT_NUMERIC_PROTOCOLS = false;
+bool PREFIX_UIKIT = false;
 
 const std::string ASSIGNMENT_OPERATORS[] = {"+=", "-=", "*=", "/=", "%=", ">>=", "<<=", "&=", "^=", "|=", "&>>=", "&<<="};
 
@@ -454,7 +455,7 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   if(LIB_GENERATE_MODE && LIB_MIXINS.count(memberIdentifier)) {
     name = "MIO_Mixin_" + name;
   }
-  if(memberIdentifier.find("UIKit.(file).") == 0) {
+  if(memberIdentifier.find("UIKit.(file).") == 0 || (PREFIX_UIKIT && name.find("UI") == 0)) {
     if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
       name = "M" + name;
     }
@@ -1674,6 +1675,9 @@ namespace {
                   }
                   else if(command == "\"-generate-imported-module\"") {
                     LIB_GENERATE_MODE = GENERATE_IMPORTED_MODULE = skipCommand = true;
+                  }
+                  else if(command == "\"-prefix-uikit\"") {
+                    PREFIX_UIKIT = skipCommand = true;
                   }
                   else if(command == "\"-print-members\"") {
                     PRINT_MEMBERS = skipCommand = true;
