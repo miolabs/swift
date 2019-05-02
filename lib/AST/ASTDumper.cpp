@@ -455,11 +455,11 @@ std::string getName(ValueDecl *D, unsigned long satisfiedProtocolRequirementI = 
   if(LIB_GENERATE_MODE && LIB_MIXINS.count(memberIdentifier)) {
     name = "MIO_Mixin_" + name;
   }
-  if(memberIdentifier.find("UIKit.(file).") == 0 || (PREFIX_UIKIT && name.find("UI") == 0)) {
+  /*if(memberIdentifier.find("UIKit.(file).") == 0 || (PREFIX_UIKIT && name.find("UI") == 0)) {
     if(auto *ND = dyn_cast<NominalTypeDecl>(D)) {
       name = "M" + name;
     }
-  }
+  }*/
   
   if(nameReplacements.count(name)) {
     return nameReplacements[name];
