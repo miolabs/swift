@@ -25,11 +25,6 @@ class AnyFunctionType;
 
 namespace ide {
 
-/// Prepare the given expression for type-checking again, prinicipally by
-/// erasing any ErrorType types on the given expression, allowing later
-/// type-checking to make progress.
-void prepareForRetypechecking(Expr *E);
-
 /// Type check parent contexts of the given decl context, and the body of the
 /// given context until \c Loc if the context is a function body.
 void typeCheckContextUntil(DeclContext *DC, SourceLoc Loc);
@@ -75,6 +70,10 @@ public:
     return PossibleCallees;
   }
 };
+
+/// Returns whether \p VD is referenceable with implicit member expression.
+bool isReferenceableByImplicitMemberExpr(
+    ModuleDecl *CurrModule, DeclContext *DC, Type T, ValueDecl *VD);
 
 } // namespace ide
 } // namespace swift

@@ -170,16 +170,8 @@ namespace {
   using CallbackTy = llvm::function_ref<void(SILInstruction *)>;
 } // end anonymous namespace
 
-void swift::
-recursivelyDeleteTriviallyDeadInstructions(ArrayRef<SILInstruction *> IA,
-                                           bool Force, CallbackTy Callback) {
-  SILBasicBlock::iterator instIter;
-  recursivelyDeleteTriviallyDeadInstructions(IA, instIter, Force, Callback);
-}
-
 void swift::recursivelyDeleteTriviallyDeadInstructions(
-    ArrayRef<SILInstruction *> IA, SILBasicBlock::iterator &InstIter,
-    bool Force, CallbackTy Callback) {
+    ArrayRef<SILInstruction *> IA, bool Force, CallbackTy Callback) {
   // Delete these instruction and others that become dead after it's deleted.
   llvm::SmallPtrSet<SILInstruction *, 8> DeadInsts;
   for (auto I : IA) {
@@ -230,7 +222,7 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
 
     for (auto I : DeadInsts) {
       // This will remove this instruction and all its uses.
-      eraseFromParentWithDebugInsts(I, InstIter);
+      eraseFromParentWithDebugInsts(I, Callback);
     }
 
     NextInsts.swap(DeadInsts);
@@ -244,13 +236,11 @@ void swift::recursivelyDeleteTriviallyDeadInstructions(
 /// \param I The instruction to be deleted.
 /// \param Force If Force is set, don't check if the top level instruction is
 ///        considered dead - delete it regardless.
-SILBasicBlock::iterator
-swift::recursivelyDeleteTriviallyDeadInstructions(SILInstruction *I, bool Force,
-                                                  CallbackTy Callback) {
-  SILBasicBlock::iterator nextI = std::next(I->getIterator());
+void swift::recursivelyDeleteTriviallyDeadInstructions(SILInstruction *I,
+                                                       bool Force,
+                                                       CallbackTy Callback) {
   ArrayRef<SILInstruction *> AI = ArrayRef<SILInstruction *>(I);
-  recursivelyDeleteTriviallyDeadInstructions(AI, nextI, Force, Callback);
-  return nextI;
+  recursivelyDeleteTriviallyDeadInstructions(AI, Force, Callback);
 }
 
 void swift::eraseUsesOfInstruction(SILInstruction *Inst,
@@ -928,8 +918,7 @@ SingleValueInstruction *StringConcatenationOptimizer::optimize() {
   Arguments.push_back(FuncResultType);
 
   return Builder.createApply(AI->getLoc(), FRIConvertFromBuiltin,
-                             SubstitutionMap(), Arguments,
-                             false);
+                             SubstitutionMap(), Arguments);
 }
 
 /// Top level entry point
@@ -1503,20 +1492,18 @@ bool swift::simplifyUsers(SingleValueInstruction *I) {
 /// True if a type can be expanded
 /// without a significant increase to code size.
 bool swift::shouldExpand(SILModule &Module, SILType Ty) {
-  if (Ty.isAddressOnly(Module)) {
+  // FIXME: Expansion
+  auto Expansion = ResilienceExpansion::Minimal;
+
+  if (Module.Types.getTypeLowering(Ty, Expansion).isAddressOnly()) {
     return false;
   }
   if (EnableExpandAll) {
     return true;
   }
 
-  // FIXME: Expansion
-  unsigned numFields =
-    Module.Types.countNumberOfFields(Ty, ResilienceExpansion::Minimal);
-  if (numFields > 6) {
-    return false;
-  }
-  return true;
+  unsigned NumFields = Module.Types.countNumberOfFields(Ty, Expansion);
+  return (NumFields <= 6);
 }
 
 /// Some support functions for the global-opt and let-properties-opts

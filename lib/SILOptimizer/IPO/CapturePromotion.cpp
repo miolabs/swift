@@ -967,6 +967,7 @@ bool isPartialApplyNonEscapingUser(Operand *CurrentOp, PartialApplyInst *PAI,
   }
 
   SILModule &M = PAI->getModule();
+  SILFunction *F = PAI->getFunction();
   auto closureType = PAI->getType().castTo<SILFunctionType>();
   SILFunctionConventions closureConv(closureType, M);
 
@@ -976,7 +977,10 @@ bool isPartialApplyNonEscapingUser(Operand *CurrentOp, PartialApplyInst *PAI,
   unsigned Index = OpNo - 1 + closureConv.getNumSILArguments();
 
   auto *Fn = PAI->getReferencedFunction();
-  if (!Fn || !Fn->isDefinition()) {
+
+  // It is not safe to look at the content of dynamically replaceable functions
+  // since this pass looks at the content of Fn.
+  if (!Fn || !Fn->isDefinition() || Fn->isDynamicallyReplaceable()) {
     LLVM_DEBUG(llvm::dbgs() << "        FAIL! Not a direct function definition "
                           "reference.\n");
     return false;
@@ -987,10 +991,11 @@ bool isPartialApplyNonEscapingUser(Operand *CurrentOp, PartialApplyInst *PAI,
   // For now, return false is the address argument is an address-only type,
   // since we currently handle loadable types only.
   // TODO: handle address-only types
+  // FIXME: Expansion
   auto BoxTy = BoxArg->getType().castTo<SILBoxType>();
   assert(BoxTy->getLayout()->getFields().size() == 1 &&
          "promoting compound box not implemented yet");
-  if (BoxTy->getFieldType(M, 0).isAddressOnly(M)) {
+  if (BoxTy->getFieldType(M, 0).isAddressOnly(*F)) {
     LLVM_DEBUG(llvm::dbgs() << "        FAIL! Box is an address only "
                                "argument!\n");
     return false;
