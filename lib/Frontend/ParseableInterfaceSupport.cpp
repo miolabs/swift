@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/ASTPrinter.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticsFrontend.h"
 #include "swift/AST/DiagnosticsSema.h"
@@ -50,7 +51,7 @@ static void diagnoseScopedImports(DiagnosticEngine &diags,
     if (importPair.first.empty())
       continue;
     diags.diagnose(importPair.first.front().second,
-                   diag::parseable_interface_scoped_import_unsupported);
+                   diag::module_interface_scoped_import_unsupported);
   }
 }
 
@@ -86,15 +87,19 @@ llvm::Regex swift::getSwiftInterfaceModuleFlagsRegex() {
 static void printImports(raw_ostream &out, ModuleDecl *M) {
   // FIXME: This is very similar to what's in Serializer::writeInputBlock, but
   // it's not obvious what higher-level optimization would be factored out here.
+  ModuleDecl::ImportFilter allImportFilter;
+  allImportFilter |= ModuleDecl::ImportFilterKind::Public;
+  allImportFilter |= ModuleDecl::ImportFilterKind::Private;
+
   SmallVector<ModuleDecl::ImportedModule, 8> allImports;
-  M->getImportedModules(allImports, ModuleDecl::ImportFilter::All);
+  M->getImportedModules(allImports, allImportFilter);
   ModuleDecl::removeDuplicateImports(allImports);
   diagnoseScopedImports(M->getASTContext().Diags, allImports);
 
   // Collect the public imports as a subset so that we can mark them with
   // '@_exported'.
   SmallVector<ModuleDecl::ImportedModule, 8> publicImports;
-  M->getImportedModules(publicImports, ModuleDecl::ImportFilter::Public);
+  M->getImportedModules(publicImports, ModuleDecl::ImportFilterKind::Public);
   llvm::SmallSet<ModuleDecl::ImportedModule, 8,
                  ModuleDecl::OrderImportedModules> publicImportSet;
   publicImportSet.insert(publicImports.begin(), publicImports.end());
@@ -159,47 +164,69 @@ namespace {
 class InheritedProtocolCollector {
   static const StringLiteral DummyProtocolName;
 
+  using AvailableAttrList = TinyPtrVector<const AvailableAttr *>;
+  using ProtocolAndAvailability =
+    std::pair<ProtocolDecl *, AvailableAttrList>;
+
   /// Protocols that will be included by the ASTPrinter without any extra work.
   SmallVector<ProtocolDecl *, 8> IncludedProtocols;
-  /// Protocols that will not be printed by the ASTPrinter.
-  SmallVector<ProtocolDecl *, 8> ExtraProtocols;
+  /// Protocols that will not be printed by the ASTPrinter, along with the
+  /// availability they were declared with.
+  SmallVector<ProtocolAndAvailability, 8> ExtraProtocols;
   /// Protocols that can be printed, but whose conformances are constrained with
   /// something that \e can't be printed.
   SmallVector<const ProtocolType *, 8> ConditionalConformanceProtocols;
 
+  /// Helper to extract the `@available` attributes on a decl.
+  AvailableAttrList getAvailabilityAttrs(const Decl *D) {
+    AvailableAttrList result;
+    auto attrRange = D->getAttrs().getAttributes<AvailableAttr>();
+    result.insert(result.begin(), attrRange.begin(), attrRange.end());
+    return result;
+  }
+
   /// For each type in \p directlyInherited, classify the protocols it refers to
   /// as included for printing or not, and record them in the appropriate
   /// vectors.
-  void recordProtocols(ArrayRef<TypeLoc> directlyInherited) {
+  void recordProtocols(ArrayRef<TypeLoc> directlyInherited, const Decl *D) {
+    Optional<AvailableAttrList> availableAttrs;
+
     for (TypeLoc inherited : directlyInherited) {
       Type inheritedTy = inherited.getType();
       if (!inheritedTy || !inheritedTy->isExistentialType())
         continue;
 
       bool canPrintNormally = isPublicOrUsableFromInline(inheritedTy);
-      SmallVectorImpl<ProtocolDecl *> &whichProtocols =
-          canPrintNormally ? IncludedProtocols : ExtraProtocols;
+      if (!canPrintNormally && !availableAttrs.hasValue())
+        availableAttrs = getAvailabilityAttrs(D);
 
       ExistentialLayout layout = inheritedTy->getExistentialLayout();
-      for (ProtocolType *protoTy : layout.getProtocols())
-        whichProtocols.push_back(protoTy->getDecl());
+      for (ProtocolType *protoTy : layout.getProtocols()) {
+        if (canPrintNormally)
+          IncludedProtocols.push_back(protoTy->getDecl());
+        else
+          ExtraProtocols.push_back({protoTy->getDecl(),
+                                    availableAttrs.getValue()});
+      }
       // FIXME: This ignores layout constraints, but currently we don't support
       // any of those besides 'AnyObject'.
     }
   }
 
-  /// For each type in \p directlyInherited, record any protocols that we would
-  /// have printed in ConditionalConformanceProtocols.
-  void recordConditionalConformances(ArrayRef<TypeLoc> directlyInherited) {
-    for (TypeLoc inherited : directlyInherited) {
+  /// For each type directly inherited by \p extension, record any protocols
+  /// that we would have printed in ConditionalConformanceProtocols.
+  void recordConditionalConformances(const ExtensionDecl *extension) {
+    for (TypeLoc inherited : extension->getInherited()) {
       Type inheritedTy = inherited.getType();
       if (!inheritedTy || !inheritedTy->isExistentialType())
         continue;
 
       ExistentialLayout layout = inheritedTy->getExistentialLayout();
-      for (ProtocolType *protoTy : layout.getProtocols())
-        if (isPublicOrUsableFromInline(protoTy))
-          ConditionalConformanceProtocols.push_back(protoTy);
+      for (ProtocolType *protoTy : layout.getProtocols()) {
+        if (!isPublicOrUsableFromInline(protoTy))
+          continue;
+        ConditionalConformanceProtocols.push_back(protoTy);
+      }
       // FIXME: This ignores layout constraints, but currently we don't support
       // any of those besides 'AnyObject'.
     }
@@ -239,7 +266,7 @@ public:
     if (!isPublicOrUsableFromInline(nominal))
       return;
 
-    map[nominal].recordProtocols(directlyInherited);
+    map[nominal].recordProtocols(directlyInherited, D);
 
     // Recurse to find any nested types.
     for (const Decl *member : memberContext->getMembers())
@@ -260,7 +287,7 @@ public:
     if (!isPublicOrUsableFromInline(nominal))
       return;
 
-    map[nominal].recordConditionalConformances(extension->getInherited());
+    map[nominal].recordConditionalConformances(extension);
     // No recursion here because extensions are never nested.
   }
 
@@ -303,16 +330,19 @@ public:
     // Note: We could do this in one pass, but the logic is easier to
     // understand if we build up the list and then print it, even if it takes
     // a bit more memory.
-    SmallVector<ProtocolDecl *, 16> protocolsToPrint;
-    for (ProtocolDecl *proto : ExtraProtocols) {
-      proto->walkInheritedProtocols(
+    // FIXME: This will pick the availability attributes from the first sight
+    // of a protocol rather than the maximally available case.
+    SmallVector<std::pair<ProtocolDecl *, AvailableAttrList>, 16>
+        protocolsToPrint;
+    for (const auto &protoAndAvailability : ExtraProtocols) {
+      protoAndAvailability.first->walkInheritedProtocols(
           [&](ProtocolDecl *inherited) -> TypeWalker::Action {
         if (!handledProtocols.insert(inherited).second)
           return TypeWalker::Action::SkipChildren;
 
         if (isPublicOrUsableFromInline(inherited) &&
             conformanceDeclaredInModule(M, nominal, inherited)) {
-          protocolsToPrint.push_back(inherited);
+          protocolsToPrint.push_back({inherited, protoAndAvailability.second});
           return TypeWalker::Action::SkipChildren;
         }
 
@@ -322,14 +352,20 @@ public:
     if (protocolsToPrint.empty())
       return;
 
-    out << "extension ";
-    nominal->getDeclaredType().print(out, printOptions);
-    out << " : ";
-    swift::interleave(protocolsToPrint,
-                      [&out, &printOptions](ProtocolDecl *proto) {
-                        proto->getDeclaredType()->print(out, printOptions);
-                      }, [&out] { out << ", "; });
-    out << " {}\n";
+    for (const auto &protoAndAvailability : protocolsToPrint) {
+      StreamPrinter printer(out);
+      for (const AvailableAttr *attr : protoAndAvailability.second)
+        attr->print(printer, printOptions);
+
+      printer << "extension ";
+      nominal->getDeclaredType().print(printer, printOptions);
+      printer << " : ";
+
+      ProtocolDecl *proto = protoAndAvailability.first;
+      proto->getDeclaredType()->print(printer, printOptions);
+
+      printer << " {}\n";
+    }
   }
 
   /// If there were any conditional conformances that couldn't be printed,
@@ -342,7 +378,7 @@ public:
       return false;
     assert(nominal->isGenericContext());
 
-    out << "extension ";
+    out << "@available(*, unavailable)\nextension ";
     nominal->getDeclaredType().print(out, printOptions);
     out << " : ";
     swift::interleave(ConditionalConformanceProtocols,
@@ -381,8 +417,10 @@ bool swift::emitParseableInterface(raw_ostream &out,
   SmallVector<Decl *, 16> topLevelDecls;
   M->getTopLevelDecls(topLevelDecls);
   for (const Decl *D : topLevelDecls) {
+    InheritedProtocolCollector::collectProtocols(inheritedProtocolMap, D);
+
     if (!D->shouldPrintInContext(printOptions) ||
-        !printOptions.CurrentPrintabilityChecker->shouldPrint(D, printOptions)){
+        !printOptions.shouldPrint(D)) {
       InheritedProtocolCollector::collectSkippedConditionalConformances(
           inheritedProtocolMap, D);
       continue;
@@ -390,8 +428,6 @@ bool swift::emitParseableInterface(raw_ostream &out,
 
     D->print(out, printOptions);
     out << "\n";
-
-    InheritedProtocolCollector::collectProtocols(inheritedProtocolMap, D);
   }
 
   // Print dummy extensions for any protocols that were indirectly conformed to.

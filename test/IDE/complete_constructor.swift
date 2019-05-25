@@ -48,7 +48,10 @@
 // RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=CLOSURE_IN_INIT_4 | %FileCheck %s -check-prefix=CLOSURE_IN_INIT_1
 
 // RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=AVAILABLE_1 | %FileCheck %s -check-prefix=AVAILABLE_1
-// RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=AVAILABLE_2 | %FileCheck %s -check-prefix=AVAILABLE_2
+// RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=AVAILABLE_2 | %FileCheck %s -check-prefix=AVAILABLE_1
+
+// RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=DEPENDENT_IN_CLOSURE_1 | %FileCheck %s -check-prefix=DEPENDENT_IN_CLOSURE_1
+// RUN: %target-swift-ide-test -code-completion -source-filename %s -code-completion-token=DEPENDENT_IN_CLOSURE_2 | %FileCheck %s -check-prefix=DEPENDENT_IN_CLOSURE_2
 
 func freeFunc() {}
 
@@ -334,7 +337,7 @@ struct ClosureInInit1 {
   var prop1: S = {
     return S(#^CLOSURE_IN_INIT_1^#
   }
-// CLOSURE_IN_INIT_1: Decl[Constructor]/CurrNominal:      ['(']{#Int#}[')'][#ClosureInInit1.S#];
+// CLOSURE_IN_INIT_1: Decl[Constructor]/CurrNominal{{(/TypeRelation\[Identical\])?}}:      ['(']{#Int#}[')'][#ClosureInInit1.S#];
   var prop2: S = {
     return S(#^CLOSURE_IN_INIT_2^#
   }()
@@ -368,10 +371,28 @@ func testAvailable() {
 // AVAILABLE_1: End completions
 
   let _ = AvailableTest.init(#^AVAILABLE_2^#
-// AVAILABLE_2: Begin completions, 3 items
-// AVAILABLE_2-DAG: Pattern/CurrModule:                 ['(']{#opt: Int#}[')'][#AvailableTest?#]; name=opt: Int
-// AVAILABLE_2-DAG: Pattern/CurrModule:                 ['(']{#normal1: Int#}[')'][#AvailableTest#]; name=normal1: Int
-// AVAILABLE_2-DAG: Pattern/CurrModule:                 ['(']{#normal2: Int#}[')'][#AvailableTest#]; name=normal2: Int
-// AVAILABLE_2: End completions
+}
 
+protocol DataType {
+  associatedtype Content
+}
+class DependentTypeInClosure<Data: DataType> {
+  init(_ arg: Data, fn: (Data.Content) -> Void) {}
+  init(arg: Data, fn: () -> Data.Content) {}
+}
+func testDependentTypeInClosure() {
+  let _: DependentTypeInClosure = .#^DEPENDENT_IN_CLOSURE_3^#
+  let _ = DependentTypeInClosure(#^DEPENDENT_IN_CLOSURE_1^#)
+// DEPENDENT_IN_CLOSURE_1: Begin completions
+// DEPENDENT_IN_CLOSURE_1-DAG: Decl[Constructor]/CurrNominal:      ['(']{#(arg): _#}, {#fn: (_.Content) -> Void##(_.Content) -> Void#}[')'][#DependentTypeInClosure<_>#];
+// DEPENDENT_IN_CLOSURE_1-DAG: Decl[Constructor]/CurrNominal:      ['(']{#arg: _#}, {#fn: () -> _.Content##() -> _.Content#}[')'][#DependentTypeInClosure<_>#];
+// DEPENDENT_IN_CLOSURE_1: End completions
+
+  let _ = DependentTypeInClosure.#^DEPENDENT_IN_CLOSURE_2^#
+// DEPENDENT_IN_CLOSURE_2: Begin completions, 4 items
+// DEPENDENT_IN_CLOSURE_2-DAG: Keyword[self]/CurrNominal:          self[#DependentTypeInClosure<_>.Type#]; name=self
+// DEPENDENT_IN_CLOSURE_2-DAG: Keyword/CurrNominal:                Type[#DependentTypeInClosure<_>.Type#]; name=Type
+// DEPENDENT_IN_CLOSURE_2-DAG: Decl[Constructor]/CurrNominal:      init({#(arg): _#}, {#fn: (_.Content) -> Void##(_.Content) -> Void#})[#DependentTypeInClosure<_>#]; name=init(arg: _, fn: (_.Content) -> Void)
+// DEPENDENT_IN_CLOSURE_2-DAG: Decl[Constructor]/CurrNominal:      init({#arg: _#}, {#fn: () -> _.Content##() -> _.Content#})[#DependentTypeInClosure<_>#]; name=init(arg: _, fn: () -> _.Content)
+// DEPENDENT_IN_CLOSURE_2: End completions
 }

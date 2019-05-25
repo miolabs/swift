@@ -55,7 +55,7 @@ func inoutToSharedConversions() {
 // Autoclosure
 func f1(f: @autoclosure () -> Int) { }
 func f2() -> Int { }
-f1(f: f2) // expected-error{{function produces expected type 'Int'; did you mean to call it with '()'?}}{{9-9=()}}
+f1(f: f2) // expected-error{{add () to forward @autoclosure parameter}}{{9-9=()}}
 f1(f: 5)
 
 // Ternary in closure
@@ -187,7 +187,7 @@ func testMap() {
 }
 
 // <rdar://problem/22414757> "UnresolvedDot" "in wrong phase" assertion from verifier
-[].reduce { $0 + $1 }  // expected-error {{cannot invoke 'reduce' with an argument list of type '((_, _) -> _)'}}
+[].reduce { $0 + $1 }  // expected-error {{cannot invoke 'reduce' with an argument list of type '(@escaping (_, _) -> _)'}}
 
 
 
@@ -268,7 +268,7 @@ func someFunc(_ foo: ((String) -> String)?,
 
 func verify_NotAC_to_AC_failure(_ arg: () -> ()) {
   func takesAC(_ arg: @autoclosure () -> ()) {}
-  takesAC(arg) // expected-error {{function produces expected type '()'; did you mean to call it with '()'?}}
+  takesAC(arg) // expected-error {{add () to forward @autoclosure parameter}} {{14-14=()}}
 }
 
 // SR-1069 - Error diagnostic refers to wrong argument
@@ -899,3 +899,10 @@ do {
     }
   }
 }
+
+// Don't allow result type of a closure to end up as a noescape type
+
+// The funny error is because we infer the type of badResult as () -> ()
+// via the 'T -> U => T -> ()' implicit conversion.
+let badResult = { (fn: () -> ()) in fn }
+// expected-error@-1 {{expression resolves to an unused function}}

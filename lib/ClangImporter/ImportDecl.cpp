@@ -226,6 +226,7 @@ getSwiftStdlibType(const clang::TypedefNameDecl *D,
   StringRef SwiftTypeName;
   bool CanBeMissing;
 
+
   do {
 #define MAP_TYPE(C_TYPE_NAME, C_TYPE_KIND, C_TYPE_BITWIDTH,        \
                  SWIFT_MODULE_NAME, SWIFT_TYPE_NAME,               \
@@ -233,12 +234,8 @@ getSwiftStdlibType(const clang::TypedefNameDecl *D,
     if (Name.str() == C_TYPE_NAME) {                               \
       CTypeKind = MappedCTypeKind::C_TYPE_KIND;                    \
       Bitwidth = C_TYPE_BITWIDTH;                                  \
-      if (StringRef(SWIFT_MODULE_NAME) == StringRef(STDLIB_NAME))  \
-        IsSwiftModule = true;                                      \
-      else {                                                       \
-        IsSwiftModule = false;                                     \
-        SwiftModuleName = SWIFT_MODULE_NAME;                       \
-      }                                                            \
+      SwiftModuleName = SWIFT_MODULE_NAME;                         \
+      IsSwiftModule = SwiftModuleName == STDLIB_NAME;              \
       SwiftTypeName = SWIFT_TYPE_NAME;                             \
       CanBeMissing = CAN_BE_MISSING;                               \
       NameMapping = MappedTypeNameKind::C_NAME_MAPPING;            \
@@ -248,6 +245,58 @@ getSwiftStdlibType(const clang::TypedefNameDecl *D,
       break;                                                       \
     }
 #include "MappedTypes.def"
+
+    // We handle `BOOL` as a special case because the selection here is more
+    // complicated as the type alias exists on multiple platforms as different
+    // types.  It appears in an Objective-C context where it is a `signed char`
+    // and appears in Windows as an `int`.  Furthermore, you can actually have
+    // the two interoperate, which requires a further bit of logic to
+    // disambiguate the type aliasing behaviour.  To complicate things, the two
+    // aliases bridge to different types - `ObjCBool` for Objective-C and
+    // `WindowsBool` for Windows's `BOOL` type.
+    if (Name.str() == "BOOL") {
+      auto &CASTContext = Impl.getClangASTContext();
+      auto &SwiftASTContext = Impl.SwiftContext;
+
+      // Default to Objective-C `BOOL`
+      CTypeKind = MappedCTypeKind::ObjCBool;
+      if (CASTContext.getTargetInfo().getTriple().isOSWindows()) {
+        // On Windows fall back to Windows `BOOL`
+        CTypeKind = MappedCTypeKind::SignedInt;
+        // If Objective-C interop is enabled, and we match the Objective-C
+        // `BOOL` type, then switch back to `ObjCBool`.
+        if (SwiftASTContext.LangOpts.EnableObjCInterop &&
+            CASTContext.hasSameType(D->getUnderlyingType(),
+                                    CASTContext.ObjCBuiltinBoolTy))
+          CTypeKind = MappedCTypeKind::ObjCBool;
+      }
+
+      if (CTypeKind == MappedCTypeKind::ObjCBool) {
+        Bitwidth = 8;
+        SwiftModuleName = StringRef("ObjectiveC");
+        IsSwiftModule = false;
+        SwiftTypeName = "ObjCBool";
+        NameMapping = MappedTypeNameKind::DoNothing;
+        CanBeMissing = false;
+        assert(verifyNameMapping(MappedTypeNameKind::DoNothing,
+                                 "BOOL", "ObjCBool") &&
+               "MappedTypes.def: Identical names must use DoNothing");
+      } else {
+        assert(CTypeKind == MappedCTypeKind::SignedInt &&
+               "expected Windows `BOOL` desugared to `int`");
+        Bitwidth = 32;
+        SwiftModuleName = StringRef("WinSDK");
+        IsSwiftModule = false;
+        SwiftTypeName = "WindowsBool";
+        NameMapping = MappedTypeNameKind::DoNothing;
+        CanBeMissing = true;
+        assert(verifyNameMapping(MappedTypeNameKind::DoNothing,
+                                 "BOOL", "WindowsBool") &&
+               "MappedTypes.def: Identical names must use DoNothing");
+      }
+
+      break;
+    }
 
     // We did not find this type, thus it is not mapped.
     return std::make_pair(Type(), "");
@@ -789,16 +838,21 @@ makeIndirectFieldAccessors(ClangImporter::Implementation &Impl,
     auto selfDecl = getterDecl->getImplicitSelfDecl();
     Expr *expr = new (C) DeclRefExpr(selfDecl, DeclNameLoc(),
                                      /*implicit*/true);
+    expr->setType(selfDecl->getInterfaceType());
+
     expr = new (C) MemberRefExpr(expr, SourceLoc(), anonymousFieldDecl,
                                  DeclNameLoc(), /*implicit*/true);
+    expr->setType(anonymousFieldDecl->getInterfaceType());
 
     expr = new (C) MemberRefExpr(expr, SourceLoc(), anonymousInnerFieldDecl,
                                  DeclNameLoc(), /*implicit*/true);
+    expr->setType(anonymousInnerFieldDecl->getInterfaceType());
 
     auto ret = new (C) ReturnStmt(SourceLoc(), expr);
     auto body = BraceStmt::create(C, SourceLoc(), ASTNode(ret), SourceLoc(),
                                   /*implicit*/ true);
     getterDecl->setBody(body);
+    getterDecl->setBodyTypeCheckedIfPresent();
     getterDecl->getAttrs().add(new (C) TransparentAttr(/*implicit*/ true));
     Impl.registerExternalDecl(getterDecl);
   }
@@ -808,22 +862,29 @@ makeIndirectFieldAccessors(ClangImporter::Implementation &Impl,
     auto selfDecl = setterDecl->getImplicitSelfDecl();
     Expr *lhs = new (C) DeclRefExpr(selfDecl, DeclNameLoc(),
                                      /*implicit*/true);
+    lhs->setType(LValueType::get(selfDecl->getInterfaceType()));
+
     lhs = new (C) MemberRefExpr(lhs, SourceLoc(), anonymousFieldDecl,
-                                 DeclNameLoc(), /*implicit*/true);
+                                DeclNameLoc(), /*implicit*/true);
+    lhs->setType(LValueType::get(anonymousFieldDecl->getInterfaceType()));
 
     lhs = new (C) MemberRefExpr(lhs, SourceLoc(), anonymousInnerFieldDecl,
                                 DeclNameLoc(), /*implicit*/true);
+    lhs->setType(LValueType::get(anonymousInnerFieldDecl->getInterfaceType()));
 
     auto newValueDecl = setterDecl->getParameters()->get(0);
 
     auto rhs = new (C) DeclRefExpr(newValueDecl, DeclNameLoc(),
                                    /*implicit*/ true);
+    rhs->setType(newValueDecl->getInterfaceType());
 
     auto assign = new (C) AssignExpr(lhs, SourceLoc(), rhs, /*implicit*/true);
+    assign->setType(TupleType::getEmpty(C));
 
     auto body = BraceStmt::create(C, SourceLoc(), { assign }, SourceLoc(),
                                   /*implicit*/ true);
     setterDecl->setBody(body);
+    setterDecl->setBodyTypeCheckedIfPresent();
     setterDecl->getAttrs().add(new (C) TransparentAttr(/*implicit*/ true));
     Impl.registerExternalDecl(setterDecl);
   }
@@ -873,18 +934,35 @@ makeUnionFieldAccessors(ClangImporter::Implementation &Impl,
 
     auto selfRef = new (C) DeclRefExpr(selfDecl, DeclNameLoc(),
                                        /*implicit*/ true);
+    selfRef->setType(selfDecl->getInterfaceType());
+
     auto reinterpretCast = cast<FuncDecl>(getBuiltinValueDecl(
         C, C.getIdentifier("reinterpretCast")));
-    auto reinterpretCastRef
-      = new (C) DeclRefExpr(reinterpretCast, DeclNameLoc(), /*implicit*/ true);
-    auto reinterpreted = CallExpr::createImplicit(C, reinterpretCastRef,
+
+    ConcreteDeclRef reinterpretCastRef(
+      reinterpretCast,
+      SubstitutionMap::get(reinterpretCast->getGenericSignature(),
+                           {selfDecl->getInterfaceType(),
+                            importedFieldDecl->getInterfaceType()},
+                           ArrayRef<ProtocolConformanceRef>()));
+    auto reinterpretCastRefExpr
+      = new (C) DeclRefExpr(reinterpretCastRef, DeclNameLoc(),
+                            /*implicit*/ true);
+    reinterpretCastRefExpr->setType(
+      FunctionType::get(
+        AnyFunctionType::Param(selfDecl->getInterfaceType()),
+        importedFieldDecl->getInterfaceType()));
+  
+    auto reinterpreted = CallExpr::createImplicit(C, reinterpretCastRefExpr,
                                                   { selfRef },
                                                   { Identifier() });
+    reinterpreted->setType(importedFieldDecl->getInterfaceType());
     reinterpreted->setThrows(false);
     auto ret = new (C) ReturnStmt(SourceLoc(), reinterpreted);
     auto body = BraceStmt::create(C, SourceLoc(), ASTNode(ret), SourceLoc(),
                                   /*implicit*/ true);
     getterDecl->setBody(body);
+    getterDecl->setBodyTypeCheckedIfPresent();
     getterDecl->getAttrs().add(new (C) TransparentAttr(/*implicit*/ true));
     Impl.registerExternalDecl(getterDecl);
   }
@@ -895,30 +973,58 @@ makeUnionFieldAccessors(ClangImporter::Implementation &Impl,
 
     auto inoutSelfRef = new (C) DeclRefExpr(inoutSelfDecl, DeclNameLoc(),
                                             /*implicit*/ true);
+    inoutSelfRef->setType(LValueType::get(inoutSelfDecl->getInterfaceType()));
     auto inoutSelf = new (C) InOutExpr(SourceLoc(), inoutSelfRef,
       importedUnionDecl->getDeclaredType(), /*implicit*/ true);
+    inoutSelf->setType(InOutType::get(inoutSelfDecl->getInterfaceType()));
 
     auto newValueDecl = setterDecl->getParameters()->get(0);
 
     auto newValueRef = new (C) DeclRefExpr(newValueDecl, DeclNameLoc(),
                                            /*implicit*/ true);
+    newValueRef->setType(newValueDecl->getInterfaceType());
+
     auto addressofFn = cast<FuncDecl>(getBuiltinValueDecl(
       C, C.getIdentifier("addressof")));
-    auto addressofFnRef
-      = new (C) DeclRefExpr(addressofFn, DeclNameLoc(), /*implicit*/ true);
-    auto selfPointer = CallExpr::createImplicit(C, addressofFnRef,
+    ConcreteDeclRef addressofFnRef(addressofFn,
+        SubstitutionMap::get(addressofFn->getGenericSignature(),
+                             {inoutSelfDecl->getInterfaceType()},
+                             ArrayRef<ProtocolConformanceRef>()));
+    auto addressofFnRefExpr
+      = new (C) DeclRefExpr(addressofFnRef, DeclNameLoc(), /*implicit*/ true);
+    addressofFnRefExpr->setType(
+      FunctionType::get(AnyFunctionType::Param(inoutSelfDecl->getInterfaceType(),
+                                               Identifier(),
+                                               ParameterTypeFlags().withInOut(true)),
+                        C.TheRawPointerType));
+    auto selfPointer = CallExpr::createImplicit(C, addressofFnRefExpr,
                                                 { inoutSelf },
                                                 { Identifier() });
+    selfPointer->setType(C.TheRawPointerType);
+    selfPointer->setThrows(false);
+
     auto initializeFn = cast<FuncDecl>(getBuiltinValueDecl(
       C, C.getIdentifier("initialize")));
-    auto initializeFnRef
-      = new (C) DeclRefExpr(initializeFn, DeclNameLoc(), /*implicit*/ true);
-    auto initialize = CallExpr::createImplicit(C, initializeFnRef,
+    ConcreteDeclRef initializeFnRef(initializeFn,
+        SubstitutionMap::get(initializeFn->getGenericSignature(),
+                             {newValueDecl->getInterfaceType()},
+                             ArrayRef<ProtocolConformanceRef>()));
+    auto initializeFnRefExpr
+      = new (C) DeclRefExpr(initializeFnRef, DeclNameLoc(), /*implicit*/ true);
+    initializeFnRefExpr->setType(
+        FunctionType::get({AnyFunctionType::Param(newValueDecl->getInterfaceType()),
+                           AnyFunctionType::Param(C.TheRawPointerType)},
+                          TupleType::getEmpty(C)));
+    auto initialize = CallExpr::createImplicit(C, initializeFnRefExpr,
                                                { newValueRef, selfPointer },
                                                { Identifier(), Identifier() });
+    initialize->setType(TupleType::getEmpty(C));
+    initialize->setThrows(false);
+
     auto body = BraceStmt::create(C, SourceLoc(), { initialize }, SourceLoc(),
                                   /*implicit*/ true);
     setterDecl->setBody(body);
+    setterDecl->setBodyTypeCheckedIfPresent();
     setterDecl->getAttrs().add(new (C) TransparentAttr(/*implicit*/ true));
     Impl.registerExternalDecl(setterDecl);
   }
@@ -1395,15 +1501,19 @@ static void makeStructRawValued(
         createValueConstructor(Impl, structDecl, var,
                                /*wantCtorParamNames=*/false,
                                /*wantBody=*/!Impl.hasFinishedTypeChecking()));
-  structDecl->addMember(
+
+  auto *initRawValue =
       createValueConstructor(Impl, structDecl, var,
                              /*wantCtorParamNames=*/true,
-                             /*wantBody=*/!Impl.hasFinishedTypeChecking()));
+                             /*wantBody=*/!Impl.hasFinishedTypeChecking());
+  structDecl->addMember(initRawValue);
   structDecl->addMember(patternBinding);
   structDecl->addMember(var);
   structDecl->addMember(varGetter);
 
   addSynthesizedTypealias(structDecl, ctx.Id_RawValue, underlyingType);
+  Impl.RawTypes[structDecl] = underlyingType;
+  Impl.RawInits[structDecl] = initRawValue;
 }
 
 /// Create a rawValue-ed constructor that bridges to its underlying storage.
@@ -1546,6 +1656,8 @@ static void makeStructRawValuedWithBridge(
   structDecl->addMember(computedVarGetter);
 
   addSynthesizedTypealias(structDecl, ctx.Id_RawValue, bridgedType);
+  Impl.RawTypes[structDecl] = bridgedType;
+  Impl.RawInits[structDecl] = init;
 }
 
 /// Build a declaration for an Objective-C subscript getter.
@@ -1565,7 +1677,7 @@ buildSubscriptGetterDecl(ClangImporter::Implementation &Impl,
                      AccessorKind::Get,
                      subscript,
                      /*StaticLoc=*/SourceLoc(),
-                     StaticSpellingKind::None,
+                     subscript->getStaticSpelling(),
                      /*Throws=*/false,
                      /*ThrowsLoc=*/SourceLoc(),
                      /*GenericParams=*/nullptr,
@@ -1621,7 +1733,7 @@ buildSubscriptSetterDecl(ClangImporter::Implementation &Impl,
                      AccessorKind::Set,
                      subscript,
                      /*StaticLoc=*/SourceLoc(),
-                     StaticSpellingKind::None,
+                     subscript->getStaticSpelling(),
                      /*Throws=*/false,
                      /*ThrowsLoc=*/SourceLoc(),
                      /*GenericParams=*/nullptr,
@@ -1784,6 +1896,8 @@ static bool addErrorDomain(NominalTypeDecl *swiftDecl,
 
   DeclRefExpr *domainDeclRef = new (C)
       DeclRefExpr(ConcreteDeclRef(swiftValueDecl), {}, isImplicit);
+  domainDeclRef->setType(swiftValueDecl->getInterfaceType());
+
   auto *params = ParameterList::createEmpty(C);
 
   auto getterDecl = AccessorDecl::create(C,
@@ -1815,6 +1929,8 @@ static bool addErrorDomain(NominalTypeDecl *swiftDecl,
   auto ret = new (C) ReturnStmt(SourceLoc(), domainDeclRef);
   getterDecl->setBody(
       BraceStmt::create(C, SourceLoc(), {ret}, SourceLoc(), isImplicit));
+  getterDecl->setBodyTypeCheckedIfPresent();
+  
   importer.registerExternalDecl(getterDecl);
   return true;
 }
@@ -2744,6 +2860,8 @@ namespace {
         enumDecl->addMember(rawValueBinding);
 
         addSynthesizedTypealias(enumDecl, C.Id_RawValue, underlyingType);
+        Impl.RawTypes[enumDecl] = underlyingType;
+        Impl.RawInits[enumDecl] = rawValueConstructor;
 
         // If we have an error wrapper, finish it up now that its
         // nested enum has been constructed.
@@ -3273,7 +3391,7 @@ namespace {
         // Create the global constant.
         auto result = Impl.createConstant(name, dc, type,
                                           clang::APValue(decl->getInitVal()),
-                                          ConstantConvertKind::Coerce,
+                                          ConstantConvertKind::None,
                                           /*static*/dc->isTypeContext(), decl);
         Impl.ImportedDecls[{decl->getCanonicalDecl(), getVersion()}] = result;
 
@@ -4281,12 +4399,12 @@ namespace {
     }
 
     template <typename T, typename U>
-    T *resolveSwiftDeclImpl(const U *decl, Identifier name, ModuleDecl *adapter) {
+    T *resolveSwiftDeclImpl(const U *decl, Identifier name, ModuleDecl *overlay) {
       const auto &languageVersion =
           Impl.SwiftContext.LangOpts.EffectiveLanguageVersion;
 
       SmallVector<ValueDecl *, 4> results;
-      adapter->lookupValue({}, name, NLKind::QualifiedLookup, results);
+      overlay->lookupValue({}, name, NLKind::QualifiedLookup, results);
       T *found = nullptr;
       for (auto result : results) {
         if (auto singleResult = dyn_cast<T>(result)) {
@@ -4312,8 +4430,8 @@ namespace {
     template <typename T, typename U>
     T *resolveSwiftDecl(const U *decl, Identifier name,
                         ClangModuleUnit *clangModule) {
-      if (auto adapter = clangModule->getAdapterModule())
-        return resolveSwiftDeclImpl<T>(decl, name, adapter);
+      if (auto overlay = clangModule->getOverlayModule())
+        return resolveSwiftDeclImpl<T>(decl, name, overlay);
       if (clangModule == Impl.ImportedHeaderUnit) {
         // Use an index-based loop because new owners can come in as we're
         // iterating.
@@ -4365,7 +4483,7 @@ namespace {
       // FIXME: Figure out how to deal with incomplete protocols, since that
       // notion doesn't exist in Swift.
       if (!decl->hasDefinition()) {
-        // Check if this protocol is implemented in its adapter.
+        // Check if this protocol is implemented in its overlay.
         if (auto clangModule = Impl.getClangModuleForDecl(decl, true))
           if (auto native = resolveSwiftDecl<ProtocolDecl>(decl, name,
                                                            clangModule))
@@ -4412,10 +4530,6 @@ namespace {
       importObjCProtocols(result, decl->getReferencedProtocols(),
                           inheritedTypes);
       result->setInherited(Impl.SwiftContext.AllocateCopy(inheritedTypes));
-
-      // Compute the requirement signature.
-      if (!result->isRequirementSignatureComputed())
-        result->computeRequirementSignature();
 
       result->setMemberLoader(&Impl, 0);
 
@@ -4496,7 +4610,7 @@ namespace {
       auto name = importedName.getDeclName().getBaseIdentifier();
 
       if (!decl->hasDefinition()) {
-        // Check if this class is implemented in its adapter.
+        // Check if this class is implemented in its overlay.
         if (auto clangModule = Impl.getClangModuleForDecl(decl, true)) {
           if (auto native = resolveSwiftDecl<ClassDecl>(decl, name,
                                                         clangModule)) {
@@ -5150,13 +5264,13 @@ static bool conformsToProtocolInOriginalModule(NominalTypeDecl *nominal,
   const DeclContext *containingFile = nominal->getModuleScopeContext();
   ModuleDecl *originalModule = containingFile->getParentModule();
 
-  ModuleDecl *adapterModule = nullptr;
+  ModuleDecl *overlayModule = nullptr;
   if (auto *clangUnit = dyn_cast<ClangModuleUnit>(containingFile))
-    adapterModule = clangUnit->getAdapterModule();
+    overlayModule = clangUnit->getOverlayModule();
 
   for (ExtensionDecl *extension : nominal->getExtensions()) {
     ModuleDecl *extensionModule = extension->getParentModule();
-    if (extensionModule != originalModule && extensionModule != adapterModule &&
+    if (extensionModule != originalModule && extensionModule != overlayModule &&
         extensionModule != foundationModule) {
       continue;
     }
@@ -5253,7 +5367,7 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
       return false;
 
     // Break circularity by only looking for declared conformances in the
-    // original module, or possibly its adapter.
+    // original module, or possibly its overlay.
     if (conformsToProtocolInOriginalModule(computedNominal, proto,
                                            Impl.tryLoadFoundationModule(),
                                            Impl.getTypeResolver())) {
@@ -5442,11 +5556,15 @@ Decl *SwiftDeclConverter::importEnumCaseAlias(
   auto constantRef =
       new (Impl.SwiftContext) DeclRefExpr(original, DeclNameLoc(),
                                           /*implicit*/ true);
+  constantRef->setType(original->getInterfaceType());
+
   Type importedEnumTy = importedEnum->getDeclaredInterfaceType();
+
   auto typeRef = TypeExpr::createImplicit(importedEnumTy, Impl.SwiftContext);
   auto instantiate = new (Impl.SwiftContext)
       DotSyntaxCallExpr(constantRef, SourceLoc(), typeRef);
   instantiate->setType(importedEnumTy);
+  instantiate->setThrows(false);
 
   Decl *CD = Impl.createConstant(name, importIntoDC, importedEnumTy,
                                  instantiate, ConstantConvertKind::None,
@@ -6570,6 +6688,7 @@ SwiftDeclConverter::importSubscript(Decl *decl,
   DeclName name(C, DeclBaseName::createSubscript(), {Identifier()});
   auto subscript = Impl.createDeclWithClangNode<SubscriptDecl>(
       getter->getClangNode(), getOverridableAccessLevel(dc), name,
+      /*StaticLoc=*/SourceLoc(), StaticSpellingKind::None,
       decl->getLoc(), bodyParams, decl->getLoc(),
       TypeLoc::withoutLoc(elementTy), dc,
       /*GenericParams=*/nullptr);
@@ -7769,9 +7888,6 @@ void ClangImporter::Implementation::finishNormalConformance(
   PrettyStackTraceConformance trace(SwiftContext, "completing import of",
                                     conformance);
 
-  if (!proto->isRequirementSignatureComputed())
-    proto->computeRequirementSignature();
-
   finishTypeWitnesses(conformance);
   finishInheritedConformances(conformance);
   finishSignatureConformances(conformance);
@@ -8037,6 +8153,21 @@ ClangImporter::Implementation::importDeclContextOf(
   return ext;
 }
 
+static Type getConstantLiteralType(ClangImporter::Implementation &Impl,
+                                   Type type, ConstantConvertKind convertKind) {
+  switch (convertKind) {
+  case ConstantConvertKind::Construction:
+  case ConstantConvertKind::ConstructionWithUnwrap: {
+    auto found = Impl.RawTypes.find(type->getAnyNominal());
+    assert(found != Impl.RawTypes.end());
+    return found->second;
+  }
+
+  default:
+    return type;
+  }
+}
+
 ValueDecl *
 ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
                                               Type type,
@@ -8078,20 +8209,49 @@ ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
     if (isNegative)
       printedValue = printedValue.drop_front();
 
+    auto literalType = getConstantLiteralType(*this, type, convertKind);
+
     // Create the expression node.
     StringRef printedValueCopy(context.AllocateCopy(printedValue));
     if (value.getKind() == clang::APValue::Int) {
       if (type->getCanonicalType()->isBool()) {
-        expr = new (context) BooleanLiteralExpr(value.getInt().getBoolValue(),
-                                                SourceLoc(),
-                                                /**Implicit=*/true);
+        auto *boolExpr =
+            new (context) BooleanLiteralExpr(value.getInt().getBoolValue(),
+                                             SourceLoc(),
+                                             /**Implicit=*/true);
+
+        boolExpr->setBuiltinInitializer(
+          context.getBoolBuiltinInitDecl());
+        boolExpr->setType(literalType);
+
+        expr = boolExpr;
       } else {
-        expr = new (context) IntegerLiteralExpr(printedValueCopy, SourceLoc(),
-                                                /*Implicit=*/true);
+        auto *intExpr =
+            new (context) IntegerLiteralExpr(printedValueCopy, SourceLoc(),
+                                             /*Implicit=*/true);
+
+        auto *intDecl = literalType->getAnyNominal();
+        intExpr->setBuiltinInitializer(
+          context.getIntBuiltinInitDecl(intDecl));
+        intExpr->setType(literalType);
+
+        expr = intExpr;
       }
     } else {
-      expr = new (context) FloatLiteralExpr(printedValueCopy, SourceLoc(),
-                                            /*Implicit=*/true);
+      auto *floatExpr =
+          new (context) FloatLiteralExpr(printedValueCopy, SourceLoc(),
+                                         /*Implicit=*/true);
+
+      auto maxFloatTypeDecl = context.get_MaxBuiltinFloatTypeDecl();
+      floatExpr->setBuiltinType(
+          maxFloatTypeDecl->getUnderlyingTypeLoc().getType());
+
+      auto *floatDecl = literalType->getAnyNominal();
+      floatExpr->setBuiltinInitializer(
+        context.getFloatBuiltinInitDecl(floatDecl));
+      floatExpr->setType(literalType);
+
+      expr = floatExpr;
     }
 
     if (isNegative)
@@ -8113,6 +8273,13 @@ ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
                                               bool isStatic,
                                               ClangNode ClangN) {
   auto expr = new (SwiftContext) StringLiteralExpr(value, SourceRange());
+
+  auto literalType = getConstantLiteralType(*this, type, convertKind);
+  auto *stringDecl = literalType->getAnyNominal();
+  expr->setBuiltinInitializer(
+      SwiftContext.getStringBuiltinInitDecl(stringDecl));
+  expr->setType(literalType);
+
   return createConstant(name, dc, type, expr, convertKind, isStatic, ClangN);
 }
 
@@ -8177,20 +8344,42 @@ ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
     case ConstantConvertKind::Construction:
     case ConstantConvertKind::ConstructionWithUnwrap: {
       auto typeRef = TypeExpr::createImplicit(type, C);
-      
-      expr = CallExpr::createImplicit(C, typeRef, { expr }, { C.Id_rawValue });
-      if (convertKind == ConstantConvertKind::ConstructionWithUnwrap)
+
+      // Reference init(rawValue: T)
+      auto found = RawInits.find(type->getAnyNominal());
+      assert(found != RawInits.end());
+
+      auto *init = found->second;
+      auto initTy = init->getInterfaceType()->removeArgumentLabels(1);
+      auto declRef =
+          new (C) DeclRefExpr(init, DeclNameLoc(), /*Implicit=*/true,
+                              AccessSemantics::Ordinary, initTy);
+
+      // (Self) -> ...
+      initTy = initTy->castTo<FunctionType>()->getResult();
+      auto initRef = new (C) DotSyntaxCallExpr(declRef, SourceLoc(),
+                                               typeRef, initTy);
+      initRef->setThrows(false);
+
+      // (rawValue: T) -> ...
+      initTy = initTy->castTo<FunctionType>()->getResult();
+
+      auto initCall = CallExpr::createImplicit(C, initRef, { expr },
+                                               { C.Id_rawValue });
+      initCall->setType(initTy);
+      initCall->setThrows(false);
+
+      expr = initCall;
+
+      // Force unwrap if our init(rawValue:) is failable, which is currently
+      // the case with enums.
+      if (convertKind == ConstantConvertKind::ConstructionWithUnwrap) {
+        initTy = initTy->getOptionalObjectType();
         expr = new (C) ForceValueExpr(expr, SourceLoc());
-      break;
-    }
+        expr->setType(initTy);
+      }
 
-    case ConstantConvertKind::Coerce:
-      break;
-
-    case ConstantConvertKind::Downcast: {
-      expr = new (C) ForcedCheckedCastExpr(expr, SourceLoc(), SourceLoc(),
-                                           TypeLoc::withoutLoc(type));
-      expr->setImplicit();
+      assert(initTy->isEqual(type));
       break;
     }
     }
@@ -8202,6 +8391,7 @@ ClangImporter::Implementation::createConstant(Identifier name, DeclContext *dc,
     func->setBody(BraceStmt::create(C, SourceLoc(),
                                     ASTNode(ret),
                                     SourceLoc()));
+    func->setBodyTypeCheckedIfPresent();
   }
 
   // Mark the function transparent so that we inline it away completely.

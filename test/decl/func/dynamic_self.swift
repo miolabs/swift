@@ -320,18 +320,24 @@ func testOptionalSelf(_ y : Y) {
 // Conformance lookup on Self
 
 protocol Runcible {
+  associatedtype Runcer
 }
 
 extension Runcible {
   func runce() {}
+
+  func runced(_: Runcer) {}
 }
 
 func wantsRuncible<T : Runcible>(_: T) {}
 
 class Runce : Runcible {
+  typealias Runcer = Int
+
   func getRunced() -> Self {
     runce()
     wantsRuncible(self)
+    runced(3)
     return self
   }
 }
@@ -412,4 +418,21 @@ class SelfOperator {
 func useSelfOperator() {
   let s = SelfOperator()
   _ = s + s
+}
+
+// for ... in loops
+
+struct DummyIterator : IteratorProtocol {
+  func next() -> Int? { return nil }
+}
+
+class Iterable : Sequence {
+  func returnsSelf() -> Self {
+    for _ in self {}
+    return self
+  }
+
+  func makeIterator() -> DummyIterator {
+    return DummyIterator()
+  }
 }

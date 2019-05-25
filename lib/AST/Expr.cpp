@@ -308,6 +308,9 @@ ConcreteDeclRef Expr::getReferencedDecl() const {
   PASS_THROUGH_REFERENCE(RebindSelfInConstructor, getSubExpr);
 
   NO_REFERENCE(OpaqueValue);
+  NO_REFERENCE(DefaultArgument);
+  NO_REFERENCE(CallerDefaultArgument);
+
   PASS_THROUGH_REFERENCE(BindOptional, getSubExpr);
   PASS_THROUGH_REFERENCE(OptionalEvaluation, getSubExpr);
   PASS_THROUGH_REFERENCE(ForceValue, getSubExpr);
@@ -323,7 +326,6 @@ ConcreteDeclRef Expr::getReferencedDecl() const {
   PASS_THROUGH_REFERENCE(ConstructorRefCall, getFn);
   PASS_THROUGH_REFERENCE(Load, getSubExpr);
   NO_REFERENCE(DestructureTuple);
-  NO_REFERENCE(ArgumentShuffle);
   NO_REFERENCE(UnresolvedTypeConversion);
   PASS_THROUGH_REFERENCE(FunctionConversion, getSubExpr);
   PASS_THROUGH_REFERENCE(CovariantFunctionConversion, getSubExpr);
@@ -348,6 +350,7 @@ ConcreteDeclRef Expr::getReferencedDecl() const {
   PASS_THROUGH_REFERENCE(BridgeToObjC, getSubExpr);
   PASS_THROUGH_REFERENCE(BridgeFromObjC, getSubExpr);
   PASS_THROUGH_REFERENCE(ConditionalBridgeFromObjC, getSubExpr);
+  PASS_THROUGH_REFERENCE(UnderlyingToOpaque, getSubExpr);
   NO_REFERENCE(Coerce);
   NO_REFERENCE(ForcedCheckedCast);
   NO_REFERENCE(ConditionalCheckedCast);
@@ -612,6 +615,8 @@ bool Expr::canAppendPostfixExpression(bool appendingPostfixOperator) const {
 
   case ExprKind::RebindSelfInConstructor:
   case ExprKind::OpaqueValue:
+  case ExprKind::DefaultArgument:
+  case ExprKind::CallerDefaultArgument:
   case ExprKind::BindOptional:
   case ExprKind::OptionalEvaluation:
     return false;
@@ -638,7 +643,6 @@ bool Expr::canAppendPostfixExpression(bool appendingPostfixOperator) const {
 
   case ExprKind::Load:
   case ExprKind::DestructureTuple:
-  case ExprKind::ArgumentShuffle:
   case ExprKind::UnresolvedTypeConversion:
   case ExprKind::FunctionConversion:
   case ExprKind::CovariantFunctionConversion:
@@ -664,6 +668,7 @@ bool Expr::canAppendPostfixExpression(bool appendingPostfixOperator) const {
   case ExprKind::ConditionalBridgeFromObjC:
   case ExprKind::BridgeFromObjC:
   case ExprKind::BridgeToObjC:
+  case ExprKind::UnderlyingToOpaque:
     // Implicit conversion nodes have no syntax of their own; defer to the
     // subexpression.
     return cast<ImplicitConversionExpr>(this)->getSubExpr()
@@ -808,6 +813,7 @@ static LiteralExpr *
 shallowCloneImpl(const InterpolatedStringLiteralExpr *E, ASTContext &Ctx,
                  llvm::function_ref<Type(const Expr *)> getType) {
   auto res = new (Ctx) InterpolatedStringLiteralExpr(E->getLoc(),
+                                                     E->getTrailingQuoteLoc(),
                                                      E->getLiteralCapacity(),
                                                      E->getInterpolationCount(),
                                                      E->getAppendingExpr());
@@ -1089,23 +1095,16 @@ computeSingleArgumentType(ASTContext &ctx, Expr *arg, bool implicit,
   arg->setType(TupleType::get(typeElements, ctx));
 }
 
-/// Pack the argument information into a single argument, to match the
-/// representation expected by the AST.
-///
-/// \param argLabels The argument labels, which might be updated by this
-/// function.
-///
-/// \param argLabelLocs The argument label locations, which might be updated by
-/// this function.
-static Expr *
-packSingleArgument(ASTContext &ctx, SourceLoc lParenLoc, ArrayRef<Expr *> args,
-                   ArrayRef<Identifier> &argLabels,
-                   ArrayRef<SourceLoc> &argLabelLocs, SourceLoc rParenLoc,
-                   Expr *trailingClosure, bool implicit,
-                   SmallVectorImpl<Identifier> &argLabelsScratch,
-                   SmallVectorImpl<SourceLoc> &argLabelLocsScratch,
-                   llvm::function_ref<Type(const Expr *)> getType =
-                       [](const Expr *E) -> Type { return E->getType(); }) {
+Expr *
+swift::packSingleArgument(ASTContext &ctx, SourceLoc lParenLoc,
+                          ArrayRef<Expr *> args,
+                          ArrayRef<Identifier> &argLabels,
+                          ArrayRef<SourceLoc> &argLabelLocs,
+                          SourceLoc rParenLoc,
+                          Expr *trailingClosure, bool implicit,
+                          SmallVectorImpl<Identifier> &argLabelsScratch,
+                          SmallVectorImpl<SourceLoc> &argLabelLocsScratch,
+                          llvm::function_ref<Type(const Expr *)> getType) {
   // Clear out our scratch space.
   argLabelsScratch.clear();
   argLabelLocsScratch.clear();
@@ -1341,24 +1340,6 @@ DestructureTupleExpr::create(ASTContext &ctx,
   auto mem = ctx.Allocate(size, alignof(DestructureTupleExpr));
   return ::new(mem) DestructureTupleExpr(destructuredElements,
                                          srcExpr, dstExpr, ty);
-}
-
-ArgumentShuffleExpr *ArgumentShuffleExpr::create(ASTContext &ctx,
-                                                 Expr *subExpr,
-                                                 ArrayRef<int> elementMapping,
-                                                 TypeImpact typeImpact,
-                                                 ConcreteDeclRef defaultArgsOwner,
-                                                 ArrayRef<unsigned> VariadicArgs,
-                                                 Type VarargsArrayTy,
-                                                 ArrayRef<Expr *> CallerDefaultArgs,
-                                                 Type ty) {
-  auto size = totalSizeToAlloc<Expr*, int, unsigned>(CallerDefaultArgs.size(),
-                                                     elementMapping.size(),
-                                                     VariadicArgs.size());
-  auto mem = ctx.Allocate(size, alignof(ArgumentShuffleExpr));
-  return ::new(mem) ArgumentShuffleExpr(subExpr, elementMapping, typeImpact,
-                                        defaultArgsOwner, VariadicArgs,
-                                        VarargsArrayTy, CallerDefaultArgs, ty);
 }
 
 SourceRange TupleExpr::getSourceRange() const {

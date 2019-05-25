@@ -142,6 +142,7 @@ SILGenModule::emitVTableMethod(ClassDecl *theClass,
     .emitVTableThunk(derived, implFn, basePattern,
                      overrideInfo.LoweredType,
                      derivedInfo.LoweredType);
+  emitLazyConformancesForFunction(thunk);
 
   return SILVTable::Entry(base, thunk, implKind, implLinkage);
 }
@@ -382,8 +383,7 @@ public:
   IsSerialized_t Serialized;
 
   SILGenConformance(SILGenModule &SGM, NormalProtocolConformance *C)
-    // We only need to emit witness tables for base NormalProtocolConformances.
-    : SGM(SGM), Conformance(C->getRootNormalConformance()),
+    : SGM(SGM), Conformance(C),
       Linkage(getLinkageForProtocolConformance(Conformance,
                                                ForDefinition)),
       Serialized(isConformanceSerialized(Conformance))
@@ -454,11 +454,7 @@ public:
     });
 
     // Emit the witness table for the base conformance if it is shared.
-    if (getLinkageForProtocolConformance(
-                                        conformance->getRootNormalConformance(),
-                                        NotForDefinition)
-          == SILLinkage::Shared)
-      SGM.getWitnessTable(conformance->getRootNormalConformance());
+    SGM.useConformance(ProtocolConformanceRef(conformance));
   }
 
   Witness getWitness(ValueDecl *decl) {
@@ -549,56 +545,16 @@ public:
 
 } // end anonymous namespace
 
-static SILWitnessTable *
-getWitnessTableToInsertAfter(SILGenModule &SGM,
-                             NormalProtocolConformance *insertAfter) {
-  while (insertAfter) {
-    // If the table was emitted, emit after it.
-    auto found = SGM.emittedWitnessTables.find(insertAfter);
-    if (found != SGM.emittedWitnessTables.end())
-      return found->second;
-
-    // Otherwise, try inserting after the table we would transitively be
-    // inserted after.
-    auto foundDelayed = SGM.delayedConformances.find(insertAfter);
-    if (foundDelayed != SGM.delayedConformances.end())
-      insertAfter = foundDelayed->second.insertAfter;
-    else
-      break;
-  }
-
-  return nullptr;
-}
-
 SILWitnessTable *
-SILGenModule::getWitnessTable(ProtocolConformance *conformance) {
-  auto normal = conformance->getRootNormalConformance();
-
+SILGenModule::getWitnessTable(NormalProtocolConformance *conformance) {
   // If we've already emitted this witness table, return it.
-  auto found = emittedWitnessTables.find(normal);
+  auto found = emittedWitnessTables.find(conformance);
   if (found != emittedWitnessTables.end())
     return found->second;
 
-  SILWitnessTable *table = SILGenConformance(*this, normal).emit();
-  emittedWitnessTables.insert({normal, table});
+  SILWitnessTable *table = SILGenConformance(*this, conformance).emit();
+  emittedWitnessTables.insert({conformance, table});
 
-  // If we delayed emission of this witness table, move it to its rightful
-  // place within the module.
-  auto foundDelayed = delayedConformances.find(normal);
-  if (foundDelayed != delayedConformances.end()) {
-    M.witnessTables.remove(table);
-    auto insertAfter = getWitnessTableToInsertAfter(*this,
-                                              foundDelayed->second.insertAfter);
-    if (!insertAfter) {
-      M.witnessTables.push_front(table);
-    } else {
-      M.witnessTables.insertAfter(insertAfter->getIterator(), table);
-    }
-  } else {
-    // We would have marked a delayed conformance as "last emitted" when it
-    // was delayed.
-    lastEmittedConformance = normal;
-  }
   return table;
 }
 
@@ -713,6 +669,7 @@ SILFunction *SILGenModule::emitProtocolWitness(
                           requirement, reqtSubMap, witnessRef,
                           witnessSubs, isFree, /*isSelfConformance*/ false);
 
+  emitLazyConformancesForFunction(f);
   return f;
 }
 
@@ -781,6 +738,8 @@ static SILFunction *emitSelfConformanceWitness(SILGenModule &SGM,
   SGF.emitProtocolWitness(AbstractionPattern(reqtOrigTy), reqtSubstTy,
                           requirement, reqtSubs, requirement,
                           witnessSubs, isFree, /*isSelfConformance*/ true);
+
+  SGM.emitLazyConformancesForFunction(f);
 
   return f;
 }
@@ -952,6 +911,8 @@ public:
 
   /// Emit SIL functions for all the members of the type.
   void emitType() {
+    SGM.emitLazyConformancesForType(theType);
+
     for (Decl *member : theType->getMembers())
       visit(member);
 
@@ -977,10 +938,11 @@ public:
     // Emit witness tables for conformances of concrete types. Protocol types
     // are existential and do not have witness tables.
     for (auto *conformance : theType->getLocalConformances(
-                               ConformanceLookupKind::All, nullptr)) {
-      if (conformance->isComplete() &&
-          isa<NormalProtocolConformance>(conformance))
-        SGM.getWitnessTable(conformance);
+                               ConformanceLookupKind::NonInherited, nullptr)) {
+      if (conformance->isComplete()) {
+        if (auto *normal = dyn_cast<NormalProtocolConformance>(conformance))
+          SGM.getWitnessTable(normal);
+      }
     }
   }
 
@@ -988,6 +950,7 @@ public:
   // Visitors for subdeclarations
   //===--------------------------------------------------------------------===//
   void visitTypeAliasDecl(TypeAliasDecl *tad) {}
+  void visitOpaqueTypeDecl(OpaqueTypeDecl *otd) {}
   void visitAbstractTypeParamDecl(AbstractTypeParamDecl *tpd) {}
   void visitModuleDecl(ModuleDecl *md) {}
   void visitMissingMemberDecl(MissingMemberDecl *) {}
@@ -1025,7 +988,7 @@ public:
   void visitPatternBindingDecl(PatternBindingDecl *pd) {
     // Emit initializers.
     for (unsigned i = 0, e = pd->getNumPatternEntries(); i != e; ++i) {
-      if (pd->getNonLazyInit(i)) {
+      if (pd->getExecutableInit(i)) {
         if (pd->isStatic())
           SGM.emitGlobalInitialization(pd, i);
         else
@@ -1042,6 +1005,12 @@ public:
     }
 
     visitAbstractStorageDecl(vd);
+  }
+
+  void visitSubscriptDecl(SubscriptDecl *sd) {
+    SGM.emitDefaultArgGenerators(sd, sd->getIndices());
+
+    visitAbstractStorageDecl(sd);
   }
 
   void visitAbstractStorageDecl(AbstractStorageDecl *asd) {
@@ -1079,9 +1048,10 @@ public:
       for (auto *conformance : e->getLocalConformances(
                                  ConformanceLookupKind::All,
                                  nullptr)) {
-        if (conformance->isComplete() &&
-            isa<NormalProtocolConformance>(conformance))
-          SGM.getWitnessTable(conformance);
+        if (conformance->isComplete()) {
+          if (auto *normal =dyn_cast<NormalProtocolConformance>(conformance))
+            SGM.getWitnessTable(normal);
+        }
       }
     }
   }
@@ -1090,6 +1060,7 @@ public:
   // Visitors for subdeclarations
   //===--------------------------------------------------------------------===//
   void visitTypeAliasDecl(TypeAliasDecl *tad) {}
+  void visitOpaqueTypeDecl(OpaqueTypeDecl *tad) {}
   void visitAbstractTypeParamDecl(AbstractTypeParamDecl *tpd) {}
   void visitModuleDecl(ModuleDecl *md) {}
   void visitMissingMemberDecl(MissingMemberDecl *) {}
@@ -1135,7 +1106,7 @@ public:
   void visitPatternBindingDecl(PatternBindingDecl *pd) {
     // Emit initializers for static variables.
     for (unsigned i = 0, e = pd->getNumPatternEntries(); i != e; ++i) {
-      if (pd->getNonLazyInit(i)) {
+      if (pd->getExecutableInit(i)) {
         assert(pd->isStatic() && "stored property in extension?!");
         SGM.emitGlobalInitialization(pd, i);
       }
@@ -1152,6 +1123,11 @@ public:
         return emitTypeMemberGlobalVariable(SGM, vd);
     }
     visitAbstractStorageDecl(vd);
+  }
+
+  void visitSubscriptDecl(SubscriptDecl *sd) {
+    SGM.emitDefaultArgGenerators(sd, sd->getIndices());
+    visitAbstractStorageDecl(sd);
   }
 
   void visitEnumCaseDecl(EnumCaseDecl *ecd) {}

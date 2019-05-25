@@ -127,9 +127,9 @@ static void validateBridgingHeaderArgs(DiagnosticEngine &diags,
   if (args.hasArgNoClaim(options::OPT_import_underlying_module))
     diags.diagnose({}, diag::error_framework_bridging_header);
 
-  if (args.hasArgNoClaim(options::OPT_emit_parseable_module_interface,
-                         options::OPT_emit_parseable_module_interface_path)) {
-    diags.diagnose({}, diag::error_bridging_header_parseable_interface);
+  if (args.hasArgNoClaim(options::OPT_emit_module_interface,
+                         options::OPT_emit_module_interface_path)) {
+    diags.diagnose({}, diag::error_bridging_header_module_interface);
   }
 }
 
@@ -1522,8 +1522,8 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
     OI.ShouldTreatModuleAsTopLevelOutput = false;
   } else if (Args.hasArg(options::OPT_emit_objc_header,
                          options::OPT_emit_objc_header_path,
-                         options::OPT_emit_parseable_module_interface,
-                         options::OPT_emit_parseable_module_interface_path) &&
+                         options::OPT_emit_module_interface,
+                         options::OPT_emit_module_interface_path) &&
              OI.CompilerMode != OutputInfo::Mode::SingleCompile) {
     // An option has been passed which requires whole-module knowledge, but we
     // don't have that. Generate a module, but treat it as an intermediate
@@ -1650,6 +1650,31 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
 
   }
 
+  if (TC.getTriple().isOSWindows()) {
+    if (const Arg *A = Args.getLastArg(options::OPT_libc)) {
+      OI.RuntimeVariant =
+          llvm::StringSwitch<Optional<OutputInfo::MSVCRuntime>>(A->getValue())
+              .Cases("MD", "MultiThreadedDLL", "shared-ucrt",
+                     OutputInfo::MSVCRuntime::MultiThreadedDLL)
+              .Cases("MDd", "MultiThreadedDebugDLL", "shared-debug-ucrt",
+                     OutputInfo::MSVCRuntime::MultiThreadedDebugDLL)
+              .Cases("MT", "MultiThreaded", "static-ucrt",
+                     OutputInfo::MSVCRuntime::MultiThreaded)
+              .Cases("MTd", "MultiThreadedDebug", "static-debug-ucrt",
+                     OutputInfo::MSVCRuntime::MultiThreadedDebug)
+              .Default(llvm::None);
+      if (!OI.RuntimeVariant)
+        Diags.diagnose({}, diag::error_invalid_arg_value, A->getSpelling(),
+                       A->getValue());
+    } else {
+      // NOTE: default to `/MD`.  This is different from `cl`'s default
+      // behaviour of `/MT` on the command line, however, Visual Studio 2015 and
+      // newer will default `/MD` as well.  Furthermore, this is far more useful
+      // of a mode since the `/MT` mode requires that everything is statically
+      // linked.
+      OI.RuntimeVariant = OutputInfo::MSVCRuntime::MultiThreadedDLL;
+    }
+  }
 }
 
 OutputInfo::Mode
@@ -2510,8 +2535,8 @@ Job *Driver::buildJobsForAction(Compilation &C, const JobAction *JA,
     chooseSwiftModuleDocOutputPath(C, OutputMap, workingDirectory,
                                    Output.get());
 
-  if (C.getArgs().hasArg(options::OPT_emit_parseable_module_interface,
-                         options::OPT_emit_parseable_module_interface_path))
+  if (C.getArgs().hasArg(options::OPT_emit_module_interface,
+                         options::OPT_emit_module_interface_path))
     chooseParseableInterfacePath(C, JA, workingDirectory, Buf, Output.get());
 
   if (C.getArgs().hasArg(options::OPT_update_code) && isa<CompileJobAction>(JA))
@@ -2830,7 +2855,7 @@ void Driver::chooseParseableInterfacePath(Compilation &C, const JobAction *JA,
 
   StringRef outputPath = *getOutputFilenameFromPathArgOrAsTopLevel(
       C.getOutputInfo(), C.getArgs(),
-      options::OPT_emit_parseable_module_interface_path,
+      options::OPT_emit_module_interface_path,
       file_types::TY_SwiftParseableInterfaceFile,
       /*TreatAsTopLevelOutput*/true, workingDirectory, buffer);
   output->setAdditionalOutputForType(file_types::TY_SwiftParseableInterfaceFile,

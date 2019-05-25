@@ -615,7 +615,8 @@ swift_conformsToProtocolImpl(const Metadata * const type,
   if (!description)
     return nullptr;
 
-  return description->getWitnessTable(type);
+  return description->getWitnessTable(
+      findConformingSuperclass(type, description));
 }
 
 const ContextDescriptor *
@@ -645,8 +646,9 @@ bool swift::_checkGenericRequirements(
     // Resolve the subject generic parameter.
     const Metadata *subjectType =
       swift_getTypeByMangledName(MetadataState::Abstract,
-                                 req.getParam(), substGenericParam,
-                                 substWitnessTable).getMetadata();
+                                 req.getParam(),
+                                 extraArguments.data(),
+                                 substGenericParam, substWitnessTable).getMetadata();
     if (!subjectType)
       return true;
 
@@ -671,8 +673,9 @@ bool swift::_checkGenericRequirements(
       // Demangle the second type under the given substitutions.
       auto otherType =
         swift_getTypeByMangledName(MetadataState::Abstract,
-                                   req.getMangledTypeName(), substGenericParam,
-                                   substWitnessTable).getMetadata();
+                                   req.getMangledTypeName(),
+                                   extraArguments.data(),
+                                   substGenericParam, substWitnessTable).getMetadata();
       if (!otherType) return true;
 
       assert(!req.getFlags().hasExtraArgument());
@@ -699,8 +702,9 @@ bool swift::_checkGenericRequirements(
       // Demangle the base type under the given substitutions.
       auto baseType =
         swift_getTypeByMangledName(MetadataState::Abstract,
-                                   req.getMangledTypeName(), substGenericParam,
-                                   substWitnessTable).getMetadata();
+                                   req.getMangledTypeName(),
+                                   extraArguments.data(),
+                                   substGenericParam, substWitnessTable).getMetadata();
       if (!baseType) return true;
 
       // Check whether it's dynamically castable, which works as a superclass

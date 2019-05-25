@@ -672,7 +672,7 @@ protocol SR_7984_P {
 struct A<T: String> {} // expected-error {{type 'T' constrained to non-protocol, non-class type 'String'}}
 struct B<T> where T: String {} // expected-error {{type 'T' constrained to non-protocol, non-class type 'String'}}
 protocol C {
-  associatedtype Foo: String // expected-error {{inheritance from non-protocol, non-class type 'String'}} expected-error {{type 'Self.Foo' constrained to non-protocol, non-class type 'String'}}
+  associatedtype Foo: String // expected-error {{type 'Self.Foo' constrained to non-protocol, non-class type 'String'}}
 }
 protocol D {
   associatedtype Foo where Foo: String // expected-error {{type 'Self.Foo' constrained to non-protocol, non-class type 'String'}}
@@ -686,4 +686,24 @@ func member_ref_with_explicit_init() {
 
   _ = S.init(42)
   // expected-error@-1 {{generic struct 'S' requires that 'Int' conform to 'P'}}
+}
+
+protocol Q {
+  init<T : P>(_ x: T) // expected-note 2{{where 'T' = 'T'}}
+}
+
+struct SR10694 {
+  init<T : P>(_ x: T) {} // expected-note 2{{where 'T' = 'T'}}
+  func bar<T>(_ x: T, _ s: SR10694, _ q: Q) {
+    SR10694.self(x) // expected-error {{initializer 'init(_:)' requires that 'T' conform to 'P'}}
+
+    type(of: s)(x)  // expected-error {{initializer 'init(_:)' requires that 'T' conform to 'P'}}
+    // expected-error@-1 {{initializing from a metatype value must reference 'init' explicitly}}
+
+    Q.self(x) // expected-error {{initializer 'init(_:)' requires that 'T' conform to 'P'}}
+    // expected-error@-1 {{protocol type 'Q' cannot be instantiated}}
+
+    type(of: q)(x)  // expected-error {{initializer 'init(_:)' requires that 'T' conform to 'P'}}
+    // expected-error@-1 {{initializing from a metatype value must reference 'init' explicitly}}
+  }
 }

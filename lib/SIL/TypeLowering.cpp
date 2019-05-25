@@ -19,9 +19,11 @@
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/Expr.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/AST/LazyResolver.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/Pattern.h"
+#include "swift/AST/PropertyDelegates.h"
 #include "swift/AST/Types.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "swift/SIL/SILArgument.h"
@@ -1515,7 +1517,7 @@ TypeConverter::getTypeLowering(AbstractionPattern origType,
   // Lower the type.
   auto loweredSubstType = computeLoweredRValueType(origType, substType);
 
-  // If that didn't change the type and the key is cacheable, there's no
+  // If that didn't change the type and the key is cachable, there's no
   // point in re-checking the table, so just construct a type lowering
   // and cache it.
   if (loweredSubstType == substType && key.isCacheable()) {
@@ -1755,9 +1757,14 @@ static CanAnyFunctionType getDefaultArgGeneratorInterfaceType(
   }
 
   // Get the generic signature from the surrounding context.
-  auto funcInfo = TC.getConstantInfo(SILDeclRef(VD));
-  return CanAnyFunctionType::get(funcInfo.FormalType.getOptGenericSignature(),
-                                 {}, canResultTy);
+  CanGenericSignature sig;
+  if (auto *afd = dyn_cast<AbstractFunctionDecl>(VD)) {
+    auto funcInfo = TC.getConstantInfo(SILDeclRef(VD));
+    sig = funcInfo.FormalType.getOptGenericSignature();
+  } else {
+    sig = TC.getEffectiveGenericSignature(DC);
+  }
+  return CanAnyFunctionType::get(sig, {}, canResultTy);
 }
 
 /// Get the type of a stored property initializer, () -> T.
@@ -1768,6 +1775,15 @@ static CanAnyFunctionType getStoredPropertyInitializerInterfaceType(
   CanType resultTy =
     VD->getParentPattern()->getType()->mapTypeOutOfContext()
           ->getCanonicalType();
+
+  // If this is the backing storage for a property with an attached
+  // delegate that was initialized with '=', the stored property initializer
+  // will be in terms of the original property's type.
+  if (auto originalProperty = VD->getOriginalDelegatedProperty()) {
+    if (originalProperty->isPropertyDelegateInitializedWithInitialValue())
+      resultTy = originalProperty->getValueInterfaceType()->getCanonicalType();
+  }
+
   auto sig = TC.getEffectiveGenericSignature(DC);
 
   return CanAnyFunctionType::get(sig, {}, resultTy);
@@ -1885,6 +1901,10 @@ TypeConverter::getFunctionInterfaceTypeWithCaptures(CanAnyFunctionType funcType,
 CanAnyFunctionType TypeConverter::makeConstantInterfaceType(SILDeclRef c) {
   auto *vd = c.loc.dyn_cast<ValueDecl *>();
 
+  if (vd && !vd->hasInterfaceType()) {
+    Context.getLazyResolver()->resolveDeclSignature(vd);
+  }
+
   switch (c.kind) {
   case SILDeclRef::Kind::Func: {
     if (auto *ACE = c.loc.dyn_cast<AbstractClosureExpr *>()) {
@@ -1940,7 +1960,8 @@ CanAnyFunctionType TypeConverter::makeConstantInterfaceType(SILDeclRef c) {
     return getGlobalAccessorType(var->getInterfaceType()->getCanonicalType());
   }
   case SILDeclRef::Kind::DefaultArgGenerator:
-    return getDefaultArgGeneratorInterfaceType(*this, vd, vd->getDeclContext(),
+    return getDefaultArgGeneratorInterfaceType(*this, vd,
+                                               vd->getInnermostDeclContext(),
                                                c.defaultArgIndex);
   case SILDeclRef::Kind::StoredPropertyInitializer:
     return getStoredPropertyInitializerInterfaceType(*this,
@@ -1995,7 +2016,10 @@ TypeConverter::getConstantGenericEnvironment(SILDeclRef c) {
     return cast<ClassDecl>(vd)->getGenericEnvironmentOfContext();
   case SILDeclRef::Kind::DefaultArgGenerator:
     // Use the generic environment of the original function.
-    return getConstantGenericEnvironment(SILDeclRef(c.getDecl()));
+    if (auto *afd = dyn_cast<AbstractFunctionDecl>(c.getDecl()))
+      return getConstantGenericEnvironment(SILDeclRef(c.getDecl()));
+    return c.getDecl()->getInnermostDeclContext()
+                      ->getGenericEnvironmentOfContext();
   case SILDeclRef::Kind::StoredPropertyInitializer:
     // Use the generic environment of the containing type.
     return c.getDecl()->getDeclContext()->getGenericEnvironmentOfContext();
@@ -2101,6 +2125,7 @@ CaptureInfo
 TypeConverter::getLoweredLocalCaptures(AnyFunctionRef fn) {
   // First, bail out if there are no local captures at all.
   if (!fn.getCaptureInfo().hasLocalCaptures() &&
+      !fn.getCaptureInfo().hasOpaqueValueCapture() &&
       !fn.getCaptureInfo().hasDynamicSelfCapture()) {
     CaptureInfo info;
     info.setGenericParamCaptures(
@@ -2123,7 +2148,8 @@ TypeConverter::getLoweredLocalCaptures(AnyFunctionRef fn) {
 
   bool capturesGenericParams = false;
   DynamicSelfType *capturesDynamicSelf = nullptr;
-  
+  OpaqueValueExpr *capturesOpaqueValue = nullptr;
+
   std::function<void (AnyFunctionRef)> collectFunctionCaptures
   = [&](AnyFunctionRef curFn) {
     if (!visitedFunctions.insert(curFn).second)
@@ -2133,6 +2159,8 @@ TypeConverter::getLoweredLocalCaptures(AnyFunctionRef fn) {
       capturesGenericParams = true;
     if (curFn.getCaptureInfo().hasDynamicSelfCapture())
       capturesDynamicSelf = curFn.getCaptureInfo().getDynamicSelfType();
+    if (curFn.getCaptureInfo().hasOpaqueValueCapture())
+      capturesOpaqueValue = curFn.getCaptureInfo().getOpaqueValue();
 
     SmallVector<CapturedValue, 4> localCaptures;
     curFn.getCaptureInfo().getLocalCaptures(localCaptures);
@@ -2247,6 +2275,11 @@ TypeConverter::getLoweredLocalCaptures(AnyFunctionRef fn) {
     resultingCaptures.push_back(capturePair.second);
   }
 
+  // If we captured an opaque value, add it.
+  if (capturesOpaqueValue) {
+    resultingCaptures.push_back(CapturedValue(capturesOpaqueValue, 0));
+  }
+
   // If we captured the dynamic 'Self' type and we have a 'self' value also,
   // add it as the final capture. Otherwise, add a fake hidden capture for
   // the dynamic 'Self' metatype.
@@ -2263,6 +2296,7 @@ TypeConverter::getLoweredLocalCaptures(AnyFunctionRef fn) {
   auto &cachedCaptures = inserted.first->second;
   cachedCaptures.setGenericParamCaptures(capturesGenericParams);
   cachedCaptures.setDynamicSelfType(capturesDynamicSelf);
+  cachedCaptures.setOpaqueValue(capturesOpaqueValue);
   cachedCaptures.setCaptures(Context.AllocateCopy(resultingCaptures));
   
   return cachedCaptures;

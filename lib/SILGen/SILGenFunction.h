@@ -554,6 +554,11 @@ public:
     // be in a different scope.
   }
 
+  std::unique_ptr<Initialization>
+  prepareIndirectResultInit(CanType formalResultType,
+                            SmallVectorImpl<SILValue> &directResultsBuffer,
+                            SmallVectorImpl<CleanupHandle> &cleanups);
+
   //===--------------------------------------------------------------------===//
   // Entry points for codegen
   //===--------------------------------------------------------------------===//
@@ -623,6 +628,10 @@ public:
   
   /// Generate a nullary function that returns the given value.
   void emitGeneratorFunction(SILDeclRef function, Expr *value);
+
+  /// Generate a nullary function that returns the value of the given variable's
+  /// expression initializer.
+  void emitGeneratorFunction(SILDeclRef function, VarDecl *var);
 
   /// Generate an ObjC-compatible destructor (-dealloc).
   void emitObjCDestructor(SILDeclRef dtor);
@@ -1210,10 +1219,6 @@ public:
                                             AccessStrategy strategy,
                                             Expr *indices);
 
-  RValue prepareEnumPayload(EnumElementDecl *element,
-                            CanFunctionType substFnType,
-                            ArgumentSource &&indexExpr);
-
   ArgumentSource prepareAccessorBaseArg(SILLocation loc, ManagedValue base,
                                         CanType baseFormalType,
                                         SILDeclRef accessor);
@@ -1417,7 +1422,7 @@ public:
   // Helpers for emitting ApplyExpr chains.
   //
 
-  RValue emitApplyExpr(Expr *e, SGFContext c);
+  RValue emitApplyExpr(ApplyExpr *e, SGFContext c);
 
   /// Emit a function application, assuming that the arguments have been
   /// lowered appropriately for the abstraction level but that the
@@ -1463,8 +1468,14 @@ public:
                                      SGFContext ctx);
 
   RValue emitApplyAllocatingInitializer(SILLocation loc, ConcreteDeclRef init,
-                                        RValue &&args, Type overriddenSelfType,
+                                        PreparedArguments &&args, Type overriddenSelfType,
                                         SGFContext ctx);
+
+  RValue emitApplyPropertyDelegateAllocator(SILLocation loc,
+                                            SubstitutionMap subs,
+                                            SILDeclRef ctorRef,
+                                            Type delegateTy,
+                                            CanAnyFunctionType funcTy);
 
   CleanupHandle emitBeginApply(SILLocation loc, ManagedValue fn,
                                SubstitutionMap subs, ArrayRef<ManagedValue> args,
@@ -1869,7 +1880,8 @@ public:
   LValue emitLValue(Expr *E, SGFAccessKind accessKind,
                     LValueOptions options = LValueOptions());
 
-  RValue emitRValueForNonMemberVarDecl(SILLocation loc, VarDecl *var,
+  RValue emitRValueForNonMemberVarDecl(SILLocation loc,
+                                       ConcreteDeclRef declRef,
                                        CanType formalRValueType,
                                        AccessSemantics semantics,
                                        SGFContext C);

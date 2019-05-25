@@ -301,6 +301,11 @@ SILLinkage SILDeclRef::getLinkage(ForDefinition_t forDefinition) const {
   // serialized bodies, but no public symbol in the generated binary.
   if (d->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
     limit = Limit::AlwaysEmitIntoClient;
+  if (auto accessor = dyn_cast<AccessorDecl>(d)) {
+    auto *storage = accessor->getStorage();
+    if (storage->getAttrs().hasAttribute<AlwaysEmitIntoClientAttr>())
+      limit = Limit::AlwaysEmitIntoClient;
+  }
 
   // ivar initializers and destroyers are completely contained within the class
   // from which they come, and never get seen externally.
@@ -476,19 +481,13 @@ IsSerialized_t SILDeclRef::isSerialized() const {
   // Default argument generators are serialized if the containing
   // declaration is public.
   if (isDefaultArgGenerator()) {
-    ResilienceExpansion expansion;
-    if (auto *EED = dyn_cast<EnumElementDecl>(d)) {
-      expansion = EED->getDefaultArgumentResilienceExpansion();
-    } else {
-      expansion = cast<AbstractFunctionDecl>(d)
-                    ->getDefaultArgumentResilienceExpansion();
-    }
-    switch (expansion) {
-    case ResilienceExpansion::Minimal:
+    auto scope =
+      d->getFormalAccessScope(/*useDC=*/nullptr,
+                              /*treatUsableFromInlineAsPublic=*/true);
+
+    if (scope.isPublic())
       return IsSerialized;
-    case ResilienceExpansion::Maximal:
-      return IsNotSerialized;
-    }
+    return IsNotSerialized;
   }
 
   // Stored property initializers are inlinable if the type is explicitly

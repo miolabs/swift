@@ -334,23 +334,11 @@ static void typeCheckFunctionsAndExternalDecls(SourceFile &SF, TypeChecker &TC) 
         TC.checkFunctionErrorHandling(AFD);
         continue;
       }
-      if (auto nominal = dyn_cast<NominalTypeDecl>(decl)) {
-        (void)nominal->getAllConformances();
+      if (isa<NominalTypeDecl>(decl))
         continue;
-      }
       if (isa<VarDecl>(decl))
         continue;
       llvm_unreachable("Unhandled external definition kind");
-    }
-
-    // Complete any protocol requirement signatures that were delayed
-    // because the protocol was validated via validateDeclForNameLookup().
-    while (!TC.DelayedRequirementSignatures.empty()) {
-      auto decl = TC.DelayedRequirementSignatures.pop_back_val();
-      if (decl->isInvalid() || TC.Context.hadError())
-        continue;
-
-      TC.validateDecl(decl);
     }
 
     // Validate any referenced declarations for SIL's purposes.
@@ -400,7 +388,6 @@ static void typeCheckFunctionsAndExternalDecls(SourceFile &SF, TypeChecker &TC) 
            currentSynthesizedDecl < SF.SynthesizedDecls.size() ||
            TC.NextDeclToFinalize < TC.DeclsToFinalize.size() ||
            !TC.ConformanceContexts.empty() ||
-           !TC.DelayedRequirementSignatures.empty() ||
            !TC.UsedConformances.empty() ||
            !TC.PartiallyCheckedConformances.empty());
 
@@ -460,6 +447,7 @@ void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
     return;
 
   auto &Ctx = SF.getASTContext();
+  BufferIndirectlyCausingDiagnosticRAII cpr(SF);
 
   // Make sure we have a type checker.
   TypeChecker &TC = createTypeChecker(Ctx);
@@ -509,20 +497,14 @@ void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
     checkBridgedFunctions(TC.Context);
 
     // Type check the top-level elements of the source file.
-    bool hasTopLevelCode = false;
     for (auto D : llvm::makeArrayRef(SF.Decls).slice(StartElem)) {
       if (auto *TLCD = dyn_cast<TopLevelCodeDecl>(D)) {
-        hasTopLevelCode = true;
         // Immediately perform global name-binding etc.
         TC.typeCheckTopLevelCodeDecl(TLCD);
+        TC.contextualizeTopLevelCode(TLC, TLCD);
       } else {
         TC.typeCheckDecl(D);
       }
-    }
-
-    if (hasTopLevelCode) {
-      TC.contextualizeTopLevelCode(TLC,
-                             llvm::makeArrayRef(SF.Decls).slice(StartElem));
     }
 
     // If we're in REPL mode, inject temporary result variables and other stuff
@@ -570,10 +552,10 @@ void swift::performTypeChecking(SourceFile &SF, TopLevelContext &TLC,
 void swift::performWholeModuleTypeChecking(SourceFile &SF) {
   auto &Ctx = SF.getASTContext();
   FrontendStatsTracer tracer(Ctx.Stats, "perform-whole-module-type-checking");
-  Ctx.diagnoseAttrsRequiringFoundation(SF);
-  Ctx.diagnoseObjCMethodConflicts(SF);
-  Ctx.diagnoseObjCUnsatisfiedOptReqConflicts(SF);
-  Ctx.diagnoseUnintendedObjCMethodOverrides(SF);
+  diagnoseAttrsRequiringFoundation(SF);
+  diagnoseObjCMethodConflicts(SF);
+  diagnoseObjCUnsatisfiedOptReqConflicts(SF);
+  diagnoseUnintendedObjCMethodOverrides(SF);
 
   // In whole-module mode, import verification is deferred until all files have
   // been type checked. This avoids caching imported declarations when a valid
@@ -589,6 +571,81 @@ void swift::performWholeModuleTypeChecking(SourceFile &SF) {
     Ctx.verifyAllLoadedModules();
   }
 #endif
+}
+
+void swift::checkInconsistentImplementationOnlyImports(ModuleDecl *MainModule) {
+  bool hasAnyImplementationOnlyImports =
+      llvm::any_of(MainModule->getFiles(), [](const FileUnit *F) -> bool {
+    auto *SF = dyn_cast<SourceFile>(F);
+    return SF && SF->hasImplementationOnlyImports();
+  });
+  if (!hasAnyImplementationOnlyImports)
+    return;
+
+  auto diagnose = [MainModule](const ImportDecl *normalImport,
+                               const ImportDecl *implementationOnlyImport) {
+    auto &diags = MainModule->getDiags();
+    {
+      InFlightDiagnostic warning =
+          diags.diagnose(normalImport, diag::warn_implementation_only_conflict,
+                         normalImport->getModule()->getName());
+      if (normalImport->getAttrs().isEmpty()) {
+        // Only try to add a fix-it if there's no other annotations on the
+        // import to avoid creating things like
+        // `@_implementationOnly @_exported import Foo`. The developer can
+        // resolve those manually.
+        warning.fixItInsert(normalImport->getStartLoc(),
+                            "@_implementationOnly ");
+      }
+    }
+    diags.diagnose(implementationOnlyImport,
+                   diag::implementation_only_conflict_here);
+  };
+
+  llvm::DenseMap<ModuleDecl *, std::vector<const ImportDecl *>> normalImports;
+  llvm::DenseMap<ModuleDecl *, const ImportDecl *> implementationOnlyImports;
+
+  for (const FileUnit *file : MainModule->getFiles()) {
+    auto *SF = dyn_cast<SourceFile>(file);
+    if (!SF)
+      continue;
+
+    for (auto *topLevelDecl : SF->Decls) {
+      auto *nextImport = dyn_cast<ImportDecl>(topLevelDecl);
+      if (!nextImport)
+        continue;
+
+      ModuleDecl *module = nextImport->getModule();
+      if (nextImport->getAttrs().hasAttribute<ImplementationOnlyAttr>()) {
+        // We saw an implementation-only import.
+        bool isNew =
+            implementationOnlyImports.insert({module, nextImport}).second;
+        if (!isNew)
+          continue;
+
+        auto seenNormalImportPosition = normalImports.find(module);
+        if (seenNormalImportPosition != normalImports.end()) {
+          for (auto *seenNormalImport : seenNormalImportPosition->getSecond())
+            diagnose(seenNormalImport, nextImport);
+
+          // We're done with these; keep the map small if possible.
+          normalImports.erase(seenNormalImportPosition);
+        }
+        continue;
+      }
+
+      // We saw a non-implementation-only import. Is that in conflict with what
+      // we've seen?
+      if (auto *seenImplementationOnlyImport =
+            implementationOnlyImports.lookup(module)) {
+        diagnose(nextImport, seenImplementationOnlyImport);
+        continue;
+      }
+
+      // Otherwise, record it for later.
+      normalImports[module].push_back(nextImport);
+    }
+  }
 }
 
 bool swift::performTypeLocChecking(ASTContext &Ctx, TypeLoc &T,

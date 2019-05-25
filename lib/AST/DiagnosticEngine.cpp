@@ -622,10 +622,14 @@ static DiagnosticKind toDiagnosticKind(DiagnosticState::Behavior behavior) {
   llvm_unreachable("Unhandled DiagnosticKind in switch.");
 }
 
-/// A special option only for compiler writers that causes Diagnostics to assert
-/// when a failure diagnostic is emitted. Intended for use in the debugger.
+// A special option only for compiler writers that causes Diagnostics to assert
+// when a failure diagnostic is emitted. Intended for use in the debugger.
 llvm::cl::opt<bool> AssertOnError("swift-diagnostics-assert-on-error",
                                   llvm::cl::init(false));
+// A special option only for compiler writers that causes Diagnostics to assert
+// when a warning diagnostic is emitted. Intended for use in the debugger.
+llvm::cl::opt<bool> AssertOnWarning("swift-diagnostics-assert-on-warning",
+                                    llvm::cl::init(false));
 
 DiagnosticState::Behavior DiagnosticState::determineBehavior(DiagID id) {
   auto set = [this](DiagnosticState::Behavior lvl) {
@@ -637,6 +641,8 @@ DiagnosticState::Behavior DiagnosticState::determineBehavior(DiagID id) {
     }
 
     assert((!AssertOnError || !anyErrorOccurred) && "We emitted an error?!");
+    assert((!AssertOnWarning || (lvl != Behavior::Warning)) &&
+           "We emitted a warning?!");
     previousBehavior = lvl;
     return lvl;
   };
@@ -838,12 +844,29 @@ void DiagnosticEngine::emitDiagnostic(const Diagnostic &diagnostic) {
   for (auto &Consumer : Consumers) {
     Consumer->handleDiagnostic(SourceMgr, loc, toDiagnosticKind(behavior),
                                diagnosticStringFor(Info.ID),
-                               diagnostic.getArgs(), Info);
+                               diagnostic.getArgs(), Info,
+                               getDefaultDiagnosticLoc());
   }
 }
 
 const char *DiagnosticEngine::diagnosticStringFor(const DiagID id) {
   return diagnosticStrings[(unsigned)id];
+}
+
+void DiagnosticEngine::setBufferIndirectlyCausingDiagnosticToInput(
+    SourceLoc loc) {
+  // If in the future, nested BufferIndirectlyCausingDiagnosticRAII need be
+  // supported, the compiler will need a stack for
+  // bufferIndirectlyCausingDiagnostic.
+  assert(bufferIndirectlyCausingDiagnostic.isInvalid() &&
+         "Buffer should not already be set.");
+  bufferIndirectlyCausingDiagnostic = loc;
+  assert(bufferIndirectlyCausingDiagnostic.isValid() &&
+         "Buffer must be valid for previous assertion to work.");
+}
+
+void DiagnosticEngine::resetBufferIndirectlyCausingDiagnostic() {
+  bufferIndirectlyCausingDiagnostic = SourceLoc();
 }
 
 DiagnosticSuppression::DiagnosticSuppression(DiagnosticEngine &diags)
@@ -855,4 +878,15 @@ DiagnosticSuppression::DiagnosticSuppression(DiagnosticEngine &diags)
 DiagnosticSuppression::~DiagnosticSuppression() {
   for (auto consumer : consumers)
     diags.addConsumer(*consumer);
+}
+
+BufferIndirectlyCausingDiagnosticRAII::BufferIndirectlyCausingDiagnosticRAII(
+    const SourceFile &SF)
+    : Diags(SF.getASTContext().Diags) {
+  auto id = SF.getBufferID();
+  if (!id)
+    return;
+  auto loc = SF.getASTContext().SourceMgr.getLocForBufferStart(*id);
+  if (loc.isValid())
+    Diags.setBufferIndirectlyCausingDiagnosticToInput(loc);
 }

@@ -113,7 +113,7 @@ APInt swift::constantFoldCast(APInt val, const BuiltinInfo &BI) {
   SrcTy->castTo<BuiltinIntegerType>()->getGreatestWidth();
   uint32_t DestBitWidth =
   DestTy->castTo<BuiltinIntegerType>()->getGreatestWidth();
-  
+
   APInt CastResV;
   if (SrcBitWidth == DestBitWidth) {
     return val;
@@ -278,6 +278,40 @@ constantFoldBinaryWithOverflow(BuiltinInst *BI, BuiltinValueKind ID,
            ResultsInError);
 }
 
+/// Constant fold a cttz or ctlz builtin inst of an integer literal.
+/// If \p countLeadingZeros is set to true, then we assume \p bi must be ctlz.
+/// If false, \p bi must be cttz.
+///
+/// NOTE: We assert that \p bi is either cttz or ctlz.
+static SILValue
+constantFoldCountLeadingOrTrialingZeroIntrinsic(BuiltinInst *bi,
+                                                bool countLeadingZeros) {
+  assert(bi->getIntrinsicID() == llvm::Intrinsic::ctlz ||
+         bi->getIntrinsicID() == llvm::Intrinsic::cttz &&
+             "Invalid Intrinsic - expected Ctlz/Cllz");
+  OperandValueArrayRef args = bi->getArguments();
+
+  // Fold for integer constant arguments.
+  auto *lhs = dyn_cast<IntegerLiteralInst>(args[0]);
+  if (!lhs) {
+    return nullptr;
+  }
+  APInt lhsi = lhs->getValue();
+  unsigned lz = [&] {
+    if (lhsi == 0) {
+      // Check corner-case of source == zero
+      return lhsi.getBitWidth();
+    }
+    if (countLeadingZeros) {
+      return lhsi.countLeadingZeros();
+    }
+    return lhsi.countTrailingZeros();
+  }();
+  APInt lzAsAPInt = APInt(lhsi.getBitWidth(), lz);
+  SILBuilderWithScope builder(bi);
+  return builder.createIntegerLiteral(bi->getLoc(), lhs->getType(), lzAsAPInt);
+}
+
 static SILValue constantFoldIntrinsic(BuiltinInst *BI, llvm::Intrinsic::ID ID,
                                       Optional<bool> &ResultsInError) {
   switch (ID) {
@@ -292,30 +326,12 @@ static SILValue constantFoldIntrinsic(BuiltinInst *BI, llvm::Intrinsic::ID ID,
   }
 
   case llvm::Intrinsic::ctlz: {
-    assert(BI->getArguments().size() == 2 && "Ctlz should have 2 args.");
-    OperandValueArrayRef Args = BI->getArguments();
-
-    // Fold for integer constant arguments.
-    auto *LHS = dyn_cast<IntegerLiteralInst>(Args[0]);
-    if (!LHS) {
-      return nullptr;
-    }
-    APInt LHSI = LHS->getValue();
-    unsigned LZ = 0;
-    // Check corner-case of source == zero
-    if (LHSI == 0) {
-      auto *RHS = dyn_cast<IntegerLiteralInst>(Args[1]);
-      if (!RHS || RHS->getValue() != 0) {
-        // Undefined
-        return nullptr;
-      }
-      LZ = LHSI.getBitWidth();
-    } else {
-      LZ = LHSI.countLeadingZeros();
-    }
-    APInt LZAsAPInt = APInt(LHSI.getBitWidth(), LZ);
-    SILBuilderWithScope B(BI);
-    return B.createIntegerLiteral(BI->getLoc(), LHS->getType(), LZAsAPInt);
+    return constantFoldCountLeadingOrTrialingZeroIntrinsic(
+        BI, true /*countLeadingZeros*/);
+  }
+  case llvm::Intrinsic::cttz: {
+    return constantFoldCountLeadingOrTrialingZeroIntrinsic(
+        BI, false /*countLeadingZeros*/);
   }
 
   case llvm::Intrinsic::sadd_with_overflow:
@@ -1510,7 +1526,7 @@ ConstantFolder::processWorkList() {
   llvm::DenseSet<SILInstruction *> ErrorSet;
   llvm::SetVector<SILInstruction *> FoldedUsers;
   CastOptimizer CastOpt(FuncBuilder, nullptr /*SILBuilderContext*/,
-                        /* ReplaceValueUsesAction */
+                        /* replaceValueUsesAction */
                         [&](SILValue oldValue, SILValue newValue) {
                           InvalidateInstructions = true;
                           oldValue->replaceAllUsesWith(newValue);
@@ -1745,7 +1761,46 @@ ConstantFolder::processWorkList() {
               FoldedUsers.insert(TI);
           }
 
-          // We were able to fold, so all users should use the new folded value.
+          // We were able to fold, so all users should use the new folded
+          // value. If we don't have any such users, continue.
+          //
+          // NOTE: The reason why we check if our result has uses is that if
+          // User is a MultipleValueInstruction an infinite loop can result if
+          // User has a result different than the one at Index that we can not
+          // constant fold and if C's defining instruction is an aggregate that
+          // defines an operand of I.
+          //
+          // As an elucidating example, consider the following SIL:
+          //
+          //   %w = integer_literal $Builtin.Word, 1
+          //   %0 = struct $Int (%w : $Builtin.Word)                     (*)
+          //   %1 = apply %f() : $@convention(thin) () -> @owned Klass
+          //   %2 = tuple (%0 : $Int, %1 : $Klass)
+          //   (%3, %4) = destructure_tuple %2 : $(Int, Klass)
+          //   store %4 to [init] %mem2: %*Klass
+          //
+          // Without this check, we would infinite loop by processing our
+          // worklist as follows:
+          //
+          // 1. We visit %w and add %0 to the worklist unconditionally since it
+          //    is a StructInst.
+          //
+          // 2. We visit %0 and then since %2 is a tuple, we add %2 to the
+          //    worklist unconditionally.
+          //
+          // 3. We visit %2 and see that it has a destructure_tuple user. We see
+          //    that we can simplify %3 -> %0, but cannot simplify %4. This
+          //    means that if we just assume success if we can RAUW %3 without
+          //    checking if we will actually replace anything, we will add %0's
+          //    defining instruction (*) to the worklist. Q.E.D.
+          //
+          // In contrast, if we realize that RAUWing %3 does nothing and skip
+          // it, we exit the worklist as expected.
+          SILValue r = User->getResult(Index);
+          if (r->use_empty())
+            continue;
+
+          // Otherwise, do the RAUW.
           User->getResult(Index)->replaceAllUsesWith(C);
 
           // The new constant could be further folded now, add it to the

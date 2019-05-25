@@ -75,7 +75,6 @@ void ConformingMethodListCallbacks::doneParsing() {
 
   // Type check the expression if needed.
   if (!T || T->is<ErrorType>()) {
-    prepareForRetypechecking(ParsedExpr);
     ConcreteDeclRef ReferencedDecl = nullptr;
     auto optT = getTypeOfCompletionContextExpr(P.Context, CurDeclContext,
                                                CompletionTypeCheckKind::Normal,
@@ -148,7 +147,8 @@ void ConformingMethodListCallbacks::getMatchingMethods(
         : CurModule(DC->getParentModule()), T(T), ExpectedTypes(expectedTypes),
           Result(result) {}
 
-    void foundDecl(ValueDecl *VD, DeclVisibilityKind reason) {
+    void foundDecl(ValueDecl *VD, DeclVisibilityKind reason,
+                   DynamicLookupInfo) {
       if (isMatchingMethod(VD) && !VD->shouldHideFromEditor())
         Result.push_back(VD);
     }
