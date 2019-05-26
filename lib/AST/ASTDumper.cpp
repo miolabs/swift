@@ -291,10 +291,10 @@ std::string getReplacement(ValueDecl *D, ConcreteDeclRef DR = nullptr, bool isAs
 
 Expr *skipWrapperExpressions(Expr *E) {
   while (true) {
-    if(auto *tupleShuffleExpr = dyn_cast<ArgumentShuffleExpr>(E)) {
+    /*if(auto *tupleShuffleExpr = dyn_cast<ArgumentShuffleExpr>(E)) {
       E = tupleShuffleExpr->getSubExpr();
     }
-    else if(auto *openExistentialExpr = dyn_cast<OpenExistentialExpr>(E)) {
+    else */if(auto *openExistentialExpr = dyn_cast<OpenExistentialExpr>(E)) {
       E = openExistentialExpr->getSubExpr();
     }
     else if(auto *loadExpr = dyn_cast<LoadExpr>(E)) {
@@ -4367,7 +4367,8 @@ public:
     printRec(E->getResultExpr());
     OS << "*/";
   }
-  void visitArgumentShuffleExpr(ArgumentShuffleExpr *E) {
+  //TODO synced
+  /*void visitArgumentShuffleExpr(ArgumentShuffleExpr *E) {
     printCommon(E, "argument_shuffle_expr");
     switch (E->getTypeImpact()) {
     case ArgumentShuffleExpr::ScalarToTuple:
@@ -4402,7 +4403,7 @@ public:
     OS << "\n";
     printRec(E->getSubExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
-  }
+  }*/
   void visitUnresolvedTypeConversionExpr(UnresolvedTypeConversionExpr *E) {
     printCommon(E, "unresolvedtype_conversion_expr") << '\n';
     printRec(E->getSubExpr());
@@ -4742,6 +4743,7 @@ public:
     printRec(opaqueValueReplacements[E]);
   }
 
+  //TODO synced
   void visitDefaultArgumentExpr(DefaultArgumentExpr *E) {
     printCommon(E, "default_argument_expr");
     OS << " default_args_owner=";
@@ -4750,6 +4752,7 @@ public:
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }
 
+  //TODO synced
   void visitCallerDefaultArgumentExpr(CallerDefaultArgumentExpr *E) {
     printCommon(E, "caller_default_argument_expr");
     printRec(E->getSubExpr());
@@ -6152,7 +6155,10 @@ namespace {
       printRec("opened_existential", T->getOpenedExistentialType());
       printField("opened_existential_id", T->getOpenedExistentialID());
       printArchetypeNestedTypes(T);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';
+       PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+      
+      opaqueValueTypeReplacements[T]->dump(OS);
+      OS << ".constructor";
     }
     void visitOpaqueTypeArchetypeType(OpaqueTypeArchetypeType *T,
                                       StringRef label) {
@@ -6166,10 +6172,7 @@ namespace {
                                Indent + 2, Dumped);
       }
       printArchetypeNestedTypes(T);
-      PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-      
-      opaqueValueTypeReplacements[T]->dump(OS);
-      OS << ".constructor";
+      PrintWithColorRAII(OS, ParenthesisColor) << ')';
     }
 
     void visitGenericTypeParamType(GenericTypeParamType *T, StringRef label, std::string chain = "") {
