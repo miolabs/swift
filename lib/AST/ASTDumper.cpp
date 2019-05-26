@@ -3827,7 +3827,10 @@ public:
     E->getInitializer().dump(PrintWithColorRAII(OS, LiteralValueColor).getOS());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
     
-    OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", '" << getName(E->getInitializer().getDecl()) << "', {})";
+    //this is failing because E->getInitializer().getDecl() is null after recent sync
+    //OS << "_create(" << getTypeName(GetTypeOfExpr(E)) << ", '" << getName(E->getInitializer().getDecl()) << "', {})";
+    
+    OS << "_injectIntoOptional(null)";
   }
 
   void visitIntegerLiteralExpr(IntegerLiteralExpr *E) {
