@@ -3075,7 +3075,7 @@ public:
     if (S)
       visit(S);
     else
-      OS.indent(Indent) << "(**NULL STATEMENT**)";
+      OS.indent(Indent) << "/**NULL STATEMENT**/null";
     Indent -= 2;
   }
 
@@ -3739,7 +3739,7 @@ public:
     if (E)
       visit(E);
     else
-      OS.indent(Indent) << "(**NULL EXPRESSION**)";
+      OS.indent(Indent) << "/**NULL EXPRESSION**/null";
     Indent -= 2;
   }
 
@@ -3969,7 +3969,7 @@ public:
     OS << "))";
   }
   void visitMagicIdentifierLiteralExpr(MagicIdentifierLiteralExpr *E) {
-    printCommon(E, "magic_identifier_literal_expr")
+    /*printCommon(E, "magic_identifier_literal_expr")
       << " kind=" << getMagicIdentifierLiteralExprKindString(E->getKind());
 
     if (E->isString()) {
@@ -3980,7 +3980,9 @@ public:
     E->getBuiltinInitializer().dump(OS);
     OS << " initializer=";
     E->getInitializer().dump(OS);
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    
+    OS << "/*magic_identifier_literal_expr*/null";
   }
 
   void visitObjectLiteralExpr(ObjectLiteralExpr *E) {
@@ -4366,9 +4368,8 @@ public:
     /*OS << "\n";
     printRec(E->getResultExpr());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
-    OS << "/*destructure_tuple_expr";
-    printRec(E->getResultExpr());
-    OS << "*/";
+    OS << "/*destructure_tuple_expr*/";
+    //printRec(E->getResultExpr());
   }
   //TODO synced
   /*void visitArgumentShuffleExpr(ArgumentShuffleExpr *E) {
@@ -4746,20 +4747,25 @@ public:
     printRec(opaqueValueReplacements[E]);
   }
 
-  //TODO synced
   void visitDefaultArgumentExpr(DefaultArgumentExpr *E) {
-    printCommon(E, "default_argument_expr");
+    /*printCommon(E, "default_argument_expr");
     OS << " default_args_owner=";
     E->getDefaultArgsOwner().dump(OS);
     OS << " param=" << E->getParamIndex();
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*default_argument_expr*/";
+    
+    if(auto *functionDecl = dyn_cast<FuncDecl>(E->getDefaultArgsOwner().getDecl())) {
+      printRec(functionDecl->getParameters()->get(E->getParamIndex())->getDefaultValue());
+    }
   }
 
-  //TODO synced
   void visitCallerDefaultArgumentExpr(CallerDefaultArgumentExpr *E) {
-    printCommon(E, "caller_default_argument_expr");
+    /*printCommon(E, "caller_default_argument_expr");
     printRec(E->getSubExpr());
-    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';*/
+    OS << "/*caller_default_argument_expr*/";
+    printRec(E->getSubExpr());
   }
 
   void printArgumentLabels(ArrayRef<Identifier> argLabels) {
