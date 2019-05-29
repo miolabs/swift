@@ -1992,6 +1992,7 @@ namespace {
       
       if(kind != "protocol") {
         OS << "\ninit$vars() {";
+        OS << "let _this = this;\n";
         if(wasClass) OS << "\nif(super.init$vars)super.init$vars()";
         OS << structInitializers.back();
         OS << "\n}";
