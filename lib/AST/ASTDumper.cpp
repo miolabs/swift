@@ -430,44 +430,44 @@ std::string getFunctionName(ValueDecl *D, std::string uniqueIdentifier) {
       if(LIB_GENERATE_MODE) {
         libFunctionOverloadedCounts[overloadIdentifier] = true;
       }
-      ParameterList *params = nullptr;
-      if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
-        params = functionDecl->getParameters();
-      }
-      else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
-        params = subscriptDecl->getIndices();
-      }
-      if(params) {
-        bool isInit = functionUniqueNames[uniqueIdentifier] == "init";
-        for(auto *P : *params) {
-          auto argumentId = P->getArgumentName();
-          if(!argumentId.empty()) {
-            std::string argumentName = argumentId.get();
-            if(argumentName != "_" && argumentName.length() > 0) {
-              functionUniqueNames[uniqueIdentifier] += std::toupper(argumentName[0]);
-              functionUniqueNames[uniqueIdentifier] += argumentName.substr(1);
-            }
-          }
-          if(isInit) {
-            std::string str;
-            llvm::raw_string_ostream stream(str);
-            if(P->hasType()) {
-              hideGenerics = true;
-              P->getType()->dump(stream);
-            }
-            else if(P->hasInterfaceType()) {
-              hideGenerics = true;
-              P->getInterfaceType()->dump(stream);
-            }
-            else continue;
-            hideGenerics = false;
-            functionUniqueNames[uniqueIdentifier] += std::regex_replace(std::regex_replace(stream.str(), std::regex("[^a-zA-Z0-9_]"), ""), std::regex("MIO_Mixin_"), "");
+    }
+    ParameterList *params = nullptr;
+    if(auto *functionDecl = dyn_cast<AbstractFunctionDecl>(D)) {
+      params = functionDecl->getParameters();
+    }
+    else if(auto *subscriptDecl = dyn_cast<SubscriptDecl>(D)) {
+      params = subscriptDecl->getIndices();
+    }
+    if(params) {
+      bool isInit = functionUniqueNames[uniqueIdentifier] == "init";
+      for(auto *P : *params) {
+        auto argumentId = P->getArgumentName();
+        if(!argumentId.empty()) {
+          std::string argumentName = argumentId.get();
+          if(argumentName != "_" && argumentName.length() > 0) {
+            functionUniqueNames[uniqueIdentifier] += std::toupper(argumentName[0]);
+            functionUniqueNames[uniqueIdentifier] += argumentName.substr(1);
           }
         }
+        if(isInit) {
+          std::string str;
+          llvm::raw_string_ostream stream(str);
+          if(P->hasType()) {
+            hideGenerics = true;
+            P->getType()->dump(stream);
+          }
+          else if(P->hasInterfaceType()) {
+            hideGenerics = true;
+            P->getInterfaceType()->dump(stream);
+          }
+          else continue;
+          hideGenerics = false;
+          functionUniqueNames[uniqueIdentifier] += std::regex_replace(std::regex_replace(stream.str(), std::regex("[^a-zA-Z0-9_]"), ""), std::regex("MIO_Mixin_"), "");
+        }
       }
-      if(std::find(std::begin(LIB_OVERRIDING_FUNCTIONS), std::end(LIB_OVERRIDING_FUNCTIONS), functionUniqueNames[uniqueIdentifier]) != std::end(LIB_OVERRIDING_FUNCTIONS)) {
-        functionUniqueNames[uniqueIdentifier] += "Swift";
-      }
+    }
+    if(std::find(std::begin(LIB_OVERRIDING_FUNCTIONS), std::end(LIB_OVERRIDING_FUNCTIONS), functionUniqueNames[uniqueIdentifier]) != std::end(LIB_OVERRIDING_FUNCTIONS)) {
+      functionUniqueNames[uniqueIdentifier] += "Swift";
     }
   }
   return functionUniqueNames[uniqueIdentifier];
